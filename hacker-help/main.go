@@ -74,6 +74,11 @@ var commands = []Command{
 		Details:     "Launches this interactive help UI.",
 	},
 	{
+		Name:        "hacker docs",
+		Description: "Display documentation and FAQ",
+		Details:     "Launches an interactive UI with frequently asked questions and answers for beginners.",
+	},
+	{
 		Name:        "hacker install <package>",
 		Description: "Install package using apt",
 		Details:     "Runs sudo apt install -y <package>.",
