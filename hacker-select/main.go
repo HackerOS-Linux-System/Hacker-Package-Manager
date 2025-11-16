@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,20 +43,20 @@ func newKeyMap() *keyMap {
 	return &keyMap{
 		quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
+				     key.WithHelp("q", "quit"),
 		),
 		toggle: key.NewBinding(
 			key.WithKeys(" "),
-			key.WithHelp("space", "toggle select"),
+				       key.WithHelp("space", "toggle select"),
 		),
 	}
 }
 
 type model struct {
-	list     list.Model
-	keys     *keyMap
-	ready    bool
-	mode     string // to know how to print
+	list  list.Model
+	keys  *keyMap
+	ready bool
+	mode  string // to know how to print
 }
 
 func newModel(items []list.Item, mode string) model {
@@ -70,9 +71,9 @@ func newModel(items []list.Item, mode string) model {
 	del := &customDelegate{DefaultDelegate: delegate}
 	l.SetDelegate(del)
 	return model{
-		list: l,
-		keys: newKeyMap(),
-		mode: mode,
+		list:  l,
+		keys:  newKeyMap(),
+		mode:  mode,
 	}
 }
 
@@ -95,7 +96,7 @@ func (d customDelegate) Render(w io.Writer, m list.Model, index int, listItem li
 	}
 	str := checkbox + i.title
 	if i.desc != "" {
-		str += "\n  " + i.desc
+		str += "\n  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA")).Render(i.desc)
 	}
 	fn := d.Styles.NormalTitle.Render
 	if index == m.Index() {
@@ -112,43 +113,43 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.list.SetWidth(msg.Width)
-		m.list.SetHeight(msg.Height - 2)
-		if !m.ready {
-			m.ready = true
-		}
-		return m, nil
-	case tea.KeyMsg:
-		if key.Matches(msg, m.keys.quit) {
-			return m, tea.Quit
-		}
-		if key.Matches(msg, m.keys.toggle) {
-			idx := m.list.Index()
-			currItem := m.list.Items()[idx].(item)
-			if currItem.typ != header {
-				currItem.selected = !currItem.selected
-				m.list.SetItem(idx, currItem)
+		case tea.WindowSizeMsg:
+			m.list.SetWidth(msg.Width)
+			m.list.SetHeight(msg.Height - 2)
+			if !m.ready {
+				m.ready = true
 			}
 			return m, nil
-		}
-		if msg.String() == "enter" {
-			for _, it := range m.list.Items() {
-				i := it.(item)
-				if i.selected {
-					if m.mode == "cyber" {
-						fmt.Println(i.value)
-					} else {
-						if i.typ == category {
-							fmt.Println("category:" + i.value)
-						} else if i.typ == app {
-							fmt.Println("app:" + i.value)
+		case tea.KeyMsg:
+			if key.Matches(msg, m.keys.quit) {
+				return m, tea.Quit
+			}
+			if key.Matches(msg, m.keys.toggle) {
+				idx := m.list.Index()
+				currItem, ok := m.list.Items()[idx].(item)
+				if ok && currItem.typ != header {
+					currItem.selected = !currItem.selected
+					m.list.SetItem(idx, currItem)
+				}
+				return m, nil
+			}
+			if msg.String() == "enter" {
+				for _, it := range m.list.Items() {
+					i, ok := it.(item)
+					if ok && i.selected {
+						if m.mode == "cyber" {
+							fmt.Println(i.value)
+						} else {
+							if i.typ == category {
+								fmt.Println("category:" + i.value)
+							} else if i.typ == app {
+								fmt.Println("app:" + i.value)
+							}
 						}
 					}
 				}
+				return m, tea.Quit
 			}
-			return m, tea.Quit
-		}
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
@@ -166,9 +167,7 @@ func main() {
 	var mode string
 	flag.StringVar(&mode, "mode", "unpack", "Mode: unpack or cyber")
 	flag.Parse()
-
 	var items []list.Item
-
 	if mode == "unpack" {
 		items = append(items, item{typ: header, title: "Categories"})
 		items = append(items, item{typ: category, title: "Add-Ons", desc: "Install all add-ons", value: "add-ons"})
@@ -178,7 +177,6 @@ func main() {
 		items = append(items, item{typ: category, title: "Emulators", desc: "Install emulators", value: "emulators"})
 		items = append(items, item{typ: category, title: "Hacker Mode", desc: "Install hacker mode", value: "hacker-mode"})
 		items = append(items, item{typ: category, title: "Gaming No Roblox", desc: "Install gaming tools without Roblox", value: "noroblox"})
-
 		items = append(items, item{typ: header, title: "Individual Applications"})
 		items = append(items, item{typ: app, title: "wine", desc: "APT - Run Windows apps", value: "wine"})
 		items = append(items, item{typ: app, title: "winetricks", desc: "APT - Wine utilities", value: "winetricks"})
@@ -220,7 +218,6 @@ func main() {
 		fmt.Println("Invalid mode")
 		os.Exit(1)
 	}
-
 	p := tea.NewProgram(newModel(items, mode), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
