@@ -1,6 +1,7 @@
 use colored::*;
 use std::io::{self};
 use rand::Rng;
+
 pub fn play_game() {
     loop {
         println!("{}", "========== Welcome to Hacker Adventure! ==========".purple().bold().on_black());
@@ -11,6 +12,8 @@ pub fn play_game() {
         println!("{}", "3. Hard (Alien UFO Control - Multi-Step Challenge)".white().bold());
         println!("{}", "4. Expert (Quantum Computer Hack - Advanced Riddles and Guesses)".white().bold());
         println!("{}", "5. Ultimate (Matrix Hack - Math and Logic Puzzles)".white().bold());
+        println!("{}", "6. Legendary (Cyber Dragon Battle - Strategy and Luck)".white().bold()); // New level
+        println!("{}", "7. Mythical (Time Machine Hack - Historical Riddles)".white().bold()); // New level
         let mut input = String::new();
         io::stdin().read_line(&mut input).expect("Failed to read line");
         let choice: u32 = match input.trim().parse() {
@@ -64,6 +67,8 @@ pub fn play_game() {
                     ("What has a ring but no finger?", "phone"),
                     ("What can run but never walks, has a mouth but never talks?", "river"),
                     ("What has one eye but can't see?", "needle"),
+                    ("What has a neck but no head?", "bottle"), // New riddle
+                    ("What can you catch but not throw?", "cold"), // New riddle
                 ];
                 for (riddle, answer) in riddles {
                     println!("{}", riddle.magenta().bold().on_black());
@@ -76,7 +81,7 @@ pub fn play_game() {
                         println!("{}", format!("Wrong! It was '{}'.", answer).red().on_black());
                     }
                 }
-                if score >= 200 {
+                if score >= 300 { // Adjusted for more riddles
                     won = true;
                     println!("{}", "Database hacked! Endless cat memes unlocked!".green().bold().on_black());
                 } else {
@@ -116,19 +121,33 @@ pub fn play_game() {
                 println!("{}", "Challenge 2: Choose your hack path:".yellow().bold().on_black());
                 println!("{}", "1. Brute force (risky)".white().bold());
                 println!("{}", "2. Stealth mode (safe)".white().bold());
+                println!("{}", "3. Quantum tunnel (experimental)".white().bold()); // New option
                 let mut choice = String::new();
                 io::stdin().read_line(&mut choice).expect("Failed to read line");
-                if choice.trim() == "2" {
-                    println!("{}", "Stealth success! +100 points.".green().on_black());
-                    score += 100;
-                } else {
-                    if rand::thread_rng().gen_bool(0.5) {
-                        println!("{}", "Brute force worked! +150 points.".green().on_black());
-                        score += 150;
-                    } else {
-                        println!("{}", "Brute force failed! -50 points.".red().on_black());
-                        score -= 50;
+                match choice.trim() {
+                    "1" => {
+                        if rand::thread_rng().gen_bool(0.5) {
+                            println!("{}", "Brute force worked! +150 points.".green().on_black());
+                            score += 150;
+                        } else {
+                            println!("{}", "Brute force failed! -50 points.".red().on_black());
+                            score -= 50;
+                        }
                     }
+                    "2" => {
+                        println!("{}", "Stealth success! +100 points.".green().on_black());
+                        score += 100;
+                    }
+                    "3" => {
+                        if rand::thread_rng().gen_bool(0.3) {
+                            println!("{}", "Quantum tunnel success! +200 points.".green().on_black());
+                            score += 200;
+                        } else {
+                            println!("{}", "Quantum failure! -100 points.".red().on_black());
+                            score -= 100;
+                        }
+                    }
+                    _ => println!("{}", "Invalid choice! No points.".yellow().on_black()),
                 }
                 println!("{}", "Final Challenge: What do hackers do at the beach?".magenta().bold().on_black());
                 println!("{}", "Hint: It involves waves.".cyan().on_black());
@@ -152,6 +171,8 @@ pub fn play_game() {
                     ("What is always in front of you but can’t be seen?", "future"),
                     ("What can you break, even if you never pick it up or touch it?", "promise"),
                     ("I have branches, but no fruit, trunk or leaves. What am I?", "bank"),
+                    ("What has many keys but can't open a single lock?", "piano"), // New
+                    ("What invention lets you look right through a wall?", "window"), // New
                 ];
                 for (riddle, answer) in riddles {
                     println!("{}", riddle.magenta().bold().on_black());
@@ -201,6 +222,16 @@ pub fn play_game() {
                 } else {
                     println!("{}", "Wrong! It's glass.".red().on_black());
                 }
+                // New Challenge 2.5: Another math
+                println!("{}", "Challenge 2.5: What is the square root of 144?".magenta().bold().on_black());
+                let mut guess = String::new();
+                io::stdin().read_line(&mut guess).expect("Failed to read line");
+                if guess.trim() == "12" {
+                    println!("{}", "Correct! +100 points.".green().on_black());
+                    score += 100;
+                } else {
+                    println!("{}", "Wrong! It's 12.".red().on_black());
+                }
                 // Challenge 3: Guess number with more range
                 let num = rand::thread_rng().gen_range(1..201);
                 let mut attempts = 0;
@@ -229,6 +260,74 @@ pub fn play_game() {
                     println!("{}", "Challenge failed! Matrix resets.".red().bold().on_black());
                 } else {
                     won = true;
+                }
+            }
+            6 => {
+                println!("{}", "Level 6: Legendary Cyber Dragon Battle!".green().bold().on_black());
+                println!("{}", "Defeat the dragon with strategy and luck.".cyan().on_black());
+                let mut dragon_hp = 500;
+                let mut player_hp = 300;
+                while dragon_hp > 0 && player_hp > 0 {
+                    println!("{}", format!("Dragon HP: {} | Your HP: {}", dragon_hp, player_hp).yellow().bold().on_black());
+                    println!("{}", "Choose action: 1. Attack (50-100 dmg), 2. Hack Shield (reduce dragon dmg), 3. Heal (50-100 hp)".white().bold());
+                    let mut choice = String::new();
+                    io::stdin().read_line(&mut choice).expect("Failed to read line");
+                    match choice.trim() {
+                        "1" => {
+                            let dmg = rand::thread_rng().gen_range(50..101);
+                            dragon_hp -= dmg;
+                            println!("{}", format!("You attack! {} damage.", dmg).green().on_black());
+                            score += dmg;
+                        }
+                        "2" => {
+                            println!("{}", "You hack the shield! Dragon damage reduced.".green().on_black());
+                            score += 50;
+                        }
+                        "3" => {
+                            let heal = rand::thread_rng().gen_range(50..101);
+                            player_hp += heal;
+                            println!("{}", format!("You heal! +{} HP.", heal).green().on_black());
+                        }
+                        _ => continue,
+                    }
+                    let dragon_dmg = rand::thread_rng().gen_range(30..71);
+                    player_hp -= dragon_dmg;
+                    println!("{}", format!("Dragon attacks! -{} HP.", dragon_dmg).red().on_black());
+                }
+                if player_hp > 0 {
+                    won = true;
+                    println!("{}", "Dragon defeated! +500 points.".green().bold().on_black());
+                    score += 500;
+                } else {
+                    println!("{}", "You were defeated by the dragon.".red().bold().on_black());
+                }
+            }
+            7 => {
+                println!("{}", "Level 7: Mythical Time Machine Hack!".green().bold().on_black());
+                println!("{}", "Solve historical riddles to hack the time machine.".cyan().on_black());
+                let riddles = vec![
+                    ("Who was the first president of the USA?", "george washington"),
+                    ("In what year did World War II end?", "1945"),
+                    ("Who invented the telephone?", "alexander graham bell"),
+                    ("What ancient wonder was in Egypt?", "pyramids"),
+                    ("Who wrote Romeo and Juliet?", "shakespeare"),
+                ];
+                for (riddle, answer) in riddles {
+                    println!("{}", riddle.magenta().bold().on_black());
+                    let mut guess = String::new();
+                    io::stdin().read_line(&mut guess).expect("Failed to read line");
+                    if guess.trim().to_lowercase() == answer {
+                        println!("{}", "Correct! +150 points.".green().on_black());
+                        score += 150;
+                    } else {
+                        println!("{}", format!("Wrong! It was '{}'.", answer).red().on_black());
+                    }
+                }
+                if score >= 600 {
+                    won = true;
+                    println!("{}", "Time machine hacked! Travel through time!".green().bold().on_black());
+                } else {
+                    println!("{}", "Time lock engaged! Try again.".red().bold().on_black());
                 }
             }
             _ => continue,
