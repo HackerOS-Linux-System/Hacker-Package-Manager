@@ -4,7 +4,6 @@ use crate::UnpackCommands;
 use crate::SystemCommands;
 use crate::RunCommands;
 use std::process::Command;
-
 pub fn handle_unpack(unpack_command: UnpackCommands) {
     match unpack_command {
         UnpackCommands::AddOns => {
@@ -41,7 +40,7 @@ pub fn handle_unpack(unpack_command: UnpackCommands) {
         UnpackCommands::Select => {
             println!("{}", "========== Interactive Package Selection ==========".yellow().bold().on_black());
             let home = std::env::var("HOME").unwrap_or_default();
-            let select_bin = format!("{}/.hackeros/hacker-select", home);
+            let select_bin = format!("{}/.hackeros/hacker/hacker-select", home);
             let select_output = Command::new(&select_bin).arg("-mode").arg("unpack").output().expect("Failed to run hacker-select");
             if !select_output.status.success() {
                 println!("{}", "Error running hacker-select".red().bold().on_black());
@@ -138,7 +137,6 @@ pub fn handle_unpack(unpack_command: UnpackCommands) {
         }
     }
 }
-
 pub fn handle_system(system_command: SystemCommands) {
     match system_command {
         SystemCommands::Logs => {
@@ -147,7 +145,6 @@ pub fn handle_system(system_command: SystemCommands) {
         }
     }
 }
-
 pub fn handle_run(cmd: RunCommands) {
     match cmd {
         RunCommands::UpdateSystem => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-system.sh"], "Updating system"),
@@ -156,5 +153,6 @@ pub fn handle_run(cmd: RunCommands) {
         RunCommands::HackerLauncher => run_command_with_spinner("bash", vec!["/usr/share/HackerOS/Scripts/HackerOS-Apps/Hacker_Launcher"], "Launching HackerOS Launcher"),
         RunCommands::HackerosGameMode => run_command_with_spinner("", vec!["/usr/share/HackerOS/Scripts/HackerOS-Apps/HackerOS-Game-Mode.AppImage"], "Running HackerOS Game Mode"),
         RunCommands::UpdateHackeros => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-hackeros.sh"], "Updating HackerOS"),
+        RunCommands::UpdateWallpapers => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-wallpapers.sh"], "Updating wallpapers"),
     }
 }
