@@ -1,16 +1,14 @@
 use clap::{Parser, Subcommand};
 use colored::*;
-use hacker::{display_ascii, handle_run, handle_system, handle_unpack, handle_update, play_game, run_command_with_spinner, RunCommands, SystemCommands, UnpackCommands};
+use hacker::{display_ascii, handle_run, handle_system, handle_unpack, play_game, run_command_with_spinner, RunCommands, SystemCommands, UnpackCommands};
 use std::process::Command;
 use std::io::{self, Write};
-
 #[derive(Parser)]
 #[command(name = "hacker", about = "A vibrant CLI tool for managing hacker tools, gaming, and system utilities", version = "1.4.0")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
-
 #[derive(Subcommand)]
 enum Commands {
     /// Unpack various toolsets and applications
@@ -71,18 +69,17 @@ enum Commands {
         container: String,
     },
 }
-
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Unpack { unpack_command } => handle_unpack(unpack_command),
         Commands::Help | Commands::HelpUi => {
             let home = std::env::var("HOME").unwrap_or_default();
-            let help_bin = format!("{}/.hackeros/hacker-help", home);
+            let help_bin = format!("{}/.hackeros/hacker/hacker-help", home);
             match Command::new(&help_bin).status() {
                 Ok(status) => {
                     if !status.success() {
-                        println!("{}", "Error running hacker-help. Ensure it's installed and executable in ~/.hackeros/".red().bold().on_black());
+                        println!("{}", "Error running hacker-help. Ensure it's installed and executable in ~/.hackeros/hacker/".red().bold().on_black());
                     }
                 }
                 Err(e) => {
@@ -92,11 +89,11 @@ fn main() {
         }
         Commands::Docs => {
             let home = std::env::var("HOME").unwrap_or_default();
-            let docs_bin = format!("{}/.hackeros/hacker-docs", home);
+            let docs_bin = format!("{}/.hackeros/hacker/hacker-docs", home);
             match Command::new(&docs_bin).status() {
                 Ok(status) => {
                     if !status.success() {
-                        println!("{}", "Error running hacker-docs. Ensure it's installed and executable in ~/.hackeros/".red().bold().on_black());
+                        println!("{}", "Error running hacker-docs. Ensure it's installed and executable in ~/.hackeros/hacker/".red().bold().on_black());
                     }
                 }
                 Err(e) => {
@@ -111,7 +108,20 @@ fn main() {
         Commands::FlatpakUpdate => run_command_with_spinner("flatpak", vec!["update", "-y"], "Running flatpak update"),
         Commands::System { system_command } => handle_system(system_command),
         Commands::Run { run_command } => handle_run(run_command),
-        Commands::Update => handle_update(),
+        Commands::Update => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let updater_bin = format!("{}/.hackeros/hacker/HackerOS-Updater", home);
+            match Command::new(&updater_bin).status() {
+                Ok(status) => {
+                    if !status.success() {
+                        println!("{}", "Error running HackerOS-Updater. Ensure it's installed and executable in ~/.hackeros/hacker/".red().bold().on_black());
+                    }
+                }
+                Err(e) => {
+                    println!("{}", format!("Failed to execute HackerOS-Updater: {}", e).red().bold().on_black());
+                }
+            }
+        }
         Commands::Game => play_game(),
         Commands::HackerLang => {
             println!("{}", "========== Hacker Programming Language ==========".magenta().bold().on_black());
@@ -123,11 +133,11 @@ fn main() {
         Commands::Ascii => display_ascii(),
         Commands::Shell => {
             let home = std::env::var("HOME").unwrap_or_default();
-            let shell_bin = format!("{}/.hackeros/hacker-shell", home);
+            let shell_bin = format!("{}/.hackeros/hacker/hacker-shell", home);
             match Command::new(&shell_bin).status() {
                 Ok(status) => {
                     if !status.success() {
-                        println!("{}", "Error running hacker-shell. Ensure it's installed and executable in ~/.hackeros/".red().bold().on_black());
+                        println!("{}", "Error running hacker-shell. Ensure it's installed and executable in ~/.hackeros/hacker/".red().bold().on_black());
                     }
                 }
                 Err(e) => {
