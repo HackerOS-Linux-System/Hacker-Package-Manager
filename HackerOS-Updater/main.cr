@@ -87,7 +87,7 @@ def enable_automatic_updates
   SCRIPT
 
   File.write(AUTO_SCRIPT_PATH, auto_script)
-  FileUtils.chmod(AUTO_SCRIPT_PATH, 0o755)
+  File.chmod(AUTO_SCRIPT_PATH, 0o755)
 
   # Add to crontab
   current_crontab = `crontab -l`
