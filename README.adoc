@@ -1,1 +1,87 @@
+= Narzędzie CLI Hacker
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectanchors:
+== Wstęp
+*Narzędzie CLI Hacker* to dynamiczne narzędzie wiersza poleceń zaprojektowane do zarządzania narzędziami hakerskimi, narzędziami do gier oraz operacjami systemowymi na https://hackeros.org[HackerOS] (dystrybucja Linux oparta na Debianie, skupiona na grach, cyberbezpieczeństwie i narzędziach hakerskich). Zbudowane głównie w języku Rust, z komponentami wspomagającymi w Go, Python i Crystal, upraszcza instalację pakietów, aktualizacje systemu, a nawet zawiera zabawną tekstową grę przygodową.
+To narzędzie jest idealne dla użytkowników, którzy chcą szybkiego dostępu do instalacji emulatorów, kontenerów cyberbezpieczeństwa (poprzez Distrobox i BlackArch), launcherów gier (Steam, Lutris itp.) i więcej. Posiada interaktywne TUIs (interfejsy użytkownika tekstowe) do pomocy, dokumentacji i wyboru pakietów.
+image::https://img.shields.io/badge/Version-1.4.0-blue.svg[Wersja]
+image::https://img.shields.io/badge/License-MIT-green.svg[Licencja]
+image::https://img.shields.io/badge/Rust-1.70+-orange.svg[Wersja Rust]
+== Funkcje
+- **Zarządzanie pakietami**: Instaluj/usuń pakiety za pomocą APT, Flatpak i niestandardowych komend unpack dla zestawów narzędzi.
+- **Wsparcie dla gier**: Instaluj narzędzia takie jak Steam, Lutris, Heroic Games Launcher, Roblox, emulatory (PS4, Switch, DOSBox, PS3).
+- **Narzędzia cyberbezpieczeństwa**: Ustaw kontener Distrobox z BlackArch Linux, aby uzyskać dostęp do tysięcy narzędzi hakerskich.
+- **Narzędzia systemowe**: Wyświetlaj logi, aktualizuj system, tapety i sam HackerOS.
+- **Interaktywna gra**: Graj w "Hacker Adventure" – wielopoziomową grę tekstową z zagadkami, zgadywankami i bitwami.
+- **TUIs i shell**: Interaktywna pomoc, dokumentacja, selektor pakietów oraz niestandardowy shell do uruchamiania komend.
+- **Updater**: Updater oparty na Crystal do aktualizacji systemu, Flatpak, Snap, firmware i więcej, z opcjonalnymi automatycznymi aktualizacjami przy starcie.
+- **Kolorowe wyjście**: Używa kolorowego wyjścia terminala dla lepszego doświadczenia użytkownika.
 
+=== Podstawowe komendy
+Poniżej znajduje się lista komend w formie tabeli:
+
+[cols="2,3",options="header"]
+|===
+|Komenda |Opis
+
+|`hacker unpack add-ons` |Instaluj dodatki takie jak Wine, BoxBuddy itp.
+|`hacker unpack gs` |Instaluj gry + cyberbezpieczeństwo.
+|`hacker unpack devtools` |Instaluj edytor Atom.
+|`hacker unpack emulators` |Instaluj emulatory PS4, Switch, DOSBox, PS3.
+|`hacker unpack cybersecurity` |Ustaw kontener BlackArch.
+|`hacker unpack select` |Interaktywny TUI do wyboru pakietów.
+|`hacker unpack gaming` |Instaluj narzędzia do gier (z Roblox).
+|`hacker unpack noroblox` |Narzędzia do gier bez Roblox.
+|`hacker unpack hacker-mode` |Instaluj gamescope.
+|`hacker unpack gamescope-session-steam` |Ustaw gamescope ze Steam.
+|`hacker help` |Uruchom interaktywny TUI pomocy.
+|`hacker docs` |Uruchom TUI FAQ i dokumentacji.
+|`hacker install <pakiet>` |Instaluj za pomocą APT.
+|`hacker remove <pakiet>` |Usuń za pomocą APT.
+|`hacker flatpak-install <pakiet>` |Instaluj Flatpak z Flathub.
+|`hacker flatpak-remove <pakiet>` |Usuń Flatpak.
+|`hacker flatpak-update` |Aktualizuj wszystkie Flatpaki.
+|`hacker system logs` |Pokaż logi systemowe.
+|`hacker run update-system` |Aktualizuj system.
+|`hacker run check-updates` |Sprawdź aktualizacje.
+|`hacker run steam` |Uruchom Steam.
+|`hacker run hacker-launcher` |Uruchom launcher aplikacji HackerOS.
+|`hacker run hackeros-game-mode` |Uruchom tryb gry.
+|`hacker run update-hackeros` |Aktualizuj HackerOS.
+|`hacker update` |Pełna aktualizacja systemu (APT, Flatpak, Snap itp.).
+|`hacker game` |Graj w grę Hacker Adventure.
+|`hacker hacker-lang` |Informacje o języku programowania Hacker.
+|`hacker ascii` |Wyświetl ASCII art.
+|`hacker shell` |Wejdź do interaktywnego shella.
+|`hacker enter <kontener>` |Wejdź do kontenera Distrobox.
+|`hacker remove-container <kontener>` |Usuń kontener Distrobox.
+
+|===
+
+=== Gra Hacker Adventure
+Uruchom `hacker game`, aby zacząć. Wybierz poziomy od Łatwego do Mitycznego, rozwiązuj zagadki, zgaduj liczby i walcz w zabawnej, hakerskiej przygodzie.
+=== Updater
+Uruchom `~/.hackeros/hacker/HackerOS-Updater` do aktualizacji systemu. Użyj `--with-gui` dla menu GUI w terminalu po aktualizacji.
+Aby włączyć automatyczne aktualizacje przy starcie: Uruchom z `--auto` lub wybierz w GUI.
+== Struktura projektu
+- `src/`: Źródło Rust dla głównego CLI.
+  - `commands.rs`: Obsługuje komendy unpack, system, run.
+  - `game.rs`: Logika gry przygodowej.
+  - `help.rs`: Wyświetlanie ASCII.
+  - `utils.rs`: Spinnery, aktualizacje, pomoce do gier/cyber.
+- `hacker-docs/`, `hacker-help/`, `hacker-select/`: TUIs w Go.
+- `hacker-shell/`: Interaktywny shell w Python.
+- `HackerOS-Updater/`: Updater w Crystal.
+== Współpraca
+1. Zrób fork repozytorium.
+2. Utwórz branch z funkcją.
+3. Zatwierdź zmiany.
+4. Wypchnij i otwórz Pull Request.
+Zgłaszaj problemy poprzez GitHub Issues.
+== Licencja
+Ten projekt jest licencjonowany na licencji MIT - szczegóły w pliku LICENSE.
+== Podziękowania
+- Zbudowane z użyciem https://www.rust-lang.org/[Rust], https://go.dev/[Go], https://www.python.org/[Python] i https://crystal-lang.org/[Crystal].
+- Używa bibliotek takich jak `clap`, `colored`, `bubbletea`, `rich` itp.
