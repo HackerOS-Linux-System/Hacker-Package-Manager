@@ -1,1 +1,183 @@
+require "option_parser"
+require "process"
+require "file_utils"
+require "colorize"
 
+# ANSI color codes
+RED = "\e[31m"
+GREEN = "\e[32m"
+BLUE = "\e[34m"
+RESET = "\e[0m"
+
+# Paths
+HACKEROS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-hackeros.sh"
+WALLPAPERS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-wallpapers.sh"
+BIN_PATH = "#{ENV["HOME"]}/.hackeros/hacker/HackerOS-Updates/HackerOS-Updater"
+AUTO_SCRIPT_PATH = "#{ENV["HOME"]}/.hackeros/auto-update.sh"  # Script to wait for internet
+
+def display_header(title : String)
+  puts "<--------[ #{title} ]-------->".colorize(:yellow)
+end
+
+def run_command(cmd : String) : {Bool, String}
+  output = IO::Memory.new
+  status = Process.run(cmd, shell: true, output: output, error: output)
+  {status.success?, output.to_s}
+end
+
+def get_status(success : Bool) : String
+  if success
+    "#{BLUE}COMPLETE#{RESET}"
+  else
+    "#{RED}FAILED#{RESET}"
+  end
+end
+
+def perform_updates : {String, String, String, String}
+  # APT Update
+  display_header("System Update")
+  apt_success = true
+  ["sudo apt update", "sudo apt upgrade -y", "sudo apt autoclean"].each do |cmd|
+    success, _ = run_command(cmd)
+    apt_success &&= success
+  end
+  apt_status = get_status(apt_success)
+
+  # Flatpak Update
+  display_header("Flatpak Update")
+  flatpak_success, _ = run_command("flatpak update -y")
+  flatpak_status = get_status(flatpak_success)
+
+  # Snap Update
+  display_header("Snap Update")
+  snap_success, _ = run_command("sudo snap refresh")
+  snap_status = get_status(snap_success)
+
+  # Firmware Update
+  display_header("Firmware Update")
+  fw_success, _ = run_command("sudo fwupdmgr update")
+  fw_status = get_status(fw_success)
+
+  # HackerOS Update
+  display_header("HackerOS Update")
+  run_command(HACKEROS_UPDATE_SCRIPT)
+
+  # Wallpapers Update
+  display_header("Wallpaper Updates")
+  run_command(WALLPAPERS_UPDATE_SCRIPT)
+
+  {apt_status, flatpak_status, snap_status, fw_status}
+end
+
+def show_summary(apt_status, flatpak_status, snap_status, fw_status)
+  puts "\nSystem Updates - #{apt_status}"
+  puts "Flatpak Updates - #{flatpak_status}"
+  puts "Snap Updates - #{snap_status}"
+  puts "Firmware Updates - #{fw_status}"
+end
+
+def enable_automatic_updates
+  # Create a script that waits for internet and runs the updater
+  auto_script = <<-SCRIPT
+  #!/bin/bash
+  while ! ping -c 1 google.com &> /dev/null; do
+    sleep 5
+  done
+  #{BIN_PATH}
+  SCRIPT
+
+  File.write(AUTO_SCRIPT_PATH, auto_script)
+  FileUtils.chmod(AUTO_SCRIPT_PATH, 0o755)
+
+  # Add to crontab
+  current_crontab = `crontab -l`
+  unless current_crontab.includes?("@reboot #{AUTO_SCRIPT_PATH}")
+    new_crontab = current_crontab + "\n@reboot #{AUTO_SCRIPT_PATH}\n"
+    File.write("/tmp/crontab.txt", new_crontab)
+    run_command("crontab /tmp/crontab.txt")
+    File.delete("/tmp/crontab.txt")
+  end
+
+  puts "#{GREEN}Automatic updates enabled.#{RESET}"
+end
+
+def disable_automatic_updates
+  # Remove from crontab
+  current_crontab = `crontab -l`
+  new_crontab = current_crontab.lines.reject { |line| line.includes?("@reboot #{AUTO_SCRIPT_PATH}") }.join("\n")
+  File.write("/tmp/crontab.txt", new_crontab)
+  run_command("crontab /tmp/crontab.txt")
+  File.delete("/tmp/crontab.txt")
+
+  # Remove script if exists
+  File.delete(AUTO_SCRIPT_PATH) if File.exists?(AUTO_SCRIPT_PATH)
+
+  puts "#{GREEN}Automatic updates disabled.#{RESET}"
+end
+
+def show_gui_menu
+  loop do
+    puts "\n[Q]uit - Close this terminal"
+    puts "[R]eboot - Reboot the system"
+    puts "[S]hutdown - Shutdown the system"
+    puts "[L]og out - Log out from current session"
+    puts "[T]erminal - Open a new Alacritty terminal"
+    puts "[A]utomatic Updates - Enable automatic updates on boot"
+
+    print "Enter your choice: "
+    choice = gets.try(&.chomp.upcase)
+
+    case choice
+    when "Q"
+      exit(0)
+    when "R"
+      run_command("sudo reboot")
+    when "S"
+      run_command("sudo shutdown -h now")
+    when "L"
+      # Assuming a desktop environment like GNOME or KDE; adjust if needed
+      run_command("gnome-session-quit --logout --no-prompt") # or qdbus org.kde.ksmserver /KSMServer logout 0 0 0 for KDE
+    when "T"
+      Process.new("alacritty", input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
+    when "A"
+      enable_automatic_updates
+    else
+      puts "#{RED}Invalid choice. Try again.#{RESET}"
+    end
+  end
+end
+
+def main
+  with_gui = false
+  gui_mode = false
+  disable_auto = false
+  auto_mode = false
+
+  OptionParser.parse do |parser|
+    parser.banner = "Usage: HackerOS-Updater [options]"
+    parser.on("with-gui", "Run in GUI mode with Alacritty") { with_gui = true }
+    parser.on("--gui-mode", "Internal GUI mode") { gui_mode = true }
+    parser.on("disable-automatic-update", "Disable automatic updates") { disable_auto = true }
+    parser.on("--auto", "Run in automatic mode (internal)") { auto_mode = true }
+  end
+
+  if disable_auto
+    disable_automatic_updates
+    return
+  end
+
+  if with_gui
+    # Launch in Alacritty with gui-mode
+    Process.new("alacritty", args: ["-e", BIN_PATH, "--gui-mode"], input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
+    return
+  end
+
+  apt_status, flatpak_status, snap_status, fw_status = perform_updates
+  show_summary(apt_status, flatpak_status, snap_status, fw_status)
+
+  if gui_mode
+    show_gui_menu
+  end
+end
+
+main if __FILE__ == Process.executable_path
