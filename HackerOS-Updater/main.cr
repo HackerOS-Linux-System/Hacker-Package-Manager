@@ -13,16 +13,15 @@ RESET = "\e[0m"
 HACKEROS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-hackeros.sh"
 WALLPAPERS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-wallpapers.sh"
 BIN_PATH = "#{ENV["HOME"]}/.hackeros/hacker/HackerOS-Updates/HackerOS-Updater"
-AUTO_SCRIPT_PATH = "#{ENV["HOME"]}/.hackeros/auto-update.sh"  # Script to wait for internet
+AUTO_SCRIPT_PATH = "#{ENV["HOME"]}/.hackeros/auto-update.sh" # Script to wait for internet
 
 def display_header(title : String)
   puts "<--------[ #{title} ]-------->".colorize(:yellow)
 end
 
 def run_command(cmd : String) : {Bool, String}
-  output = IO::Memory.new
-  status = Process.run(cmd, shell: true, output: output, error: output)
-  {status.success?, output.to_s}
+  status = Process.run(cmd, shell: true, input: Process::Redirect::Inherit, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+  {status.success?, ""}
 end
 
 def get_status(success : Bool) : String
@@ -33,7 +32,7 @@ def get_status(success : Bool) : String
   end
 end
 
-def perform_updates : {String, String, String, String}
+def perform_updates : {String, String, String, String, String, String}
   # APT Update
   display_header("System Update")
   apt_success = true
@@ -60,20 +59,24 @@ def perform_updates : {String, String, String, String}
 
   # HackerOS Update
   display_header("HackerOS Update")
-  run_command(HACKEROS_UPDATE_SCRIPT)
+  hacker_success, _ = run_command(HACKEROS_UPDATE_SCRIPT)
+  hacker_status = get_status(hacker_success)
 
   # Wallpapers Update
   display_header("Wallpaper Updates")
-  run_command(WALLPAPERS_UPDATE_SCRIPT)
+  wall_success, _ = run_command(WALLPAPERS_UPDATE_SCRIPT)
+  wall_status = get_status(wall_success)
 
-  {apt_status, flatpak_status, snap_status, fw_status}
+  {apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status}
 end
 
-def show_summary(apt_status, flatpak_status, snap_status, fw_status)
+def show_summary(apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status)
   puts "\nSystem Updates - #{apt_status}"
   puts "Flatpak Updates - #{flatpak_status}"
   puts "Snap Updates - #{snap_status}"
   puts "Firmware Updates - #{fw_status}"
+  puts "HackerOS Updates - #{hacker_status}"
+  puts "Wallpaper Updates - #{wall_status}"
 end
 
 def enable_automatic_updates
@@ -85,7 +88,6 @@ def enable_automatic_updates
   done
   #{BIN_PATH}
   SCRIPT
-
   File.write(AUTO_SCRIPT_PATH, auto_script)
   File.chmod(AUTO_SCRIPT_PATH, 0o755)
 
@@ -97,7 +99,6 @@ def enable_automatic_updates
     run_command("crontab /tmp/crontab.txt")
     File.delete("/tmp/crontab.txt")
   end
-
   puts "#{GREEN}Automatic updates enabled.#{RESET}"
 end
 
@@ -111,7 +112,6 @@ def disable_automatic_updates
 
   # Remove script if exists
   File.delete(AUTO_SCRIPT_PATH) if File.exists?(AUTO_SCRIPT_PATH)
-
   puts "#{GREEN}Automatic updates disabled.#{RESET}"
 end
 
@@ -123,10 +123,8 @@ def show_gui_menu
     puts "[L]og out - Log out from current session"
     puts "[T]erminal - Open a new Alacritty terminal"
     puts "[A]utomatic Updates - Enable automatic updates on boot"
-
     print "Enter your choice: "
     choice = gets.try(&.chomp.upcase)
-
     case choice
     when "Q"
       exit(0)
@@ -172,12 +170,12 @@ def main
     return
   end
 
-  apt_status, flatpak_status, snap_status, fw_status = perform_updates
-  show_summary(apt_status, flatpak_status, snap_status, fw_status)
+  apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status = perform_updates
+  show_summary(apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status)
 
   if gui_mode
     show_gui_menu
   end
 end
 
-main if __FILE__ == Process.executable_path
+main
