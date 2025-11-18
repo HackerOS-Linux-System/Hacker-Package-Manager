@@ -1,1 +1,20 @@
+name: HackerOS-Updater
+version: 0.1.0
+
+authors:
+  - HackerOS Team <hackeros068@gmail.com>
+
+description: |
+  Updater tool for HackerOS
+
+crystal: ">= 1.0.0"
+
+license: MIT
+
+targets:
+  HackerOS-Updater:
+    main: src/main.cr
+
+dependencies:
+  # No external dependencies needed as all used modules are in Crystal stdlib
 
