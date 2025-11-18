@@ -4,7 +4,6 @@ use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-
 pub fn run_command_with_spinner(program: &str, args: Vec<&str>, message: &str) {
     println!("{}", format!("▶ {}: {}", message, args.join(" ")).blue().bold().on_black());
     let stop = Arc::new(AtomicBool::new(false));
@@ -46,7 +45,6 @@ pub fn run_command_with_spinner(program: &str, args: Vec<&str>, message: &str) {
         println!("{}", format!("└──────────────────────────").red().bold().on_black());
     }
 }
-
 pub fn handle_update() {
     println!("{}", "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓".magenta().bold().on_black());
     println!("{}", "┃ Starting System Update ┃".magenta().bold().on_black());
@@ -62,7 +60,6 @@ pub fn handle_update() {
     println!("{}", "┃ System Update Complete ┃".green().bold().on_black());
     println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛".green().bold().on_black());
 }
-
 pub fn handle_cybersecurity() {
     println!("{}", "========== Setting up Cybersecurity Container ==========".cyan().bold().on_black());
     run_command_with_spinner("sudo", vec!["apt", "install", "-y", "distrobox"], "Installing distrobox if not present");
@@ -83,7 +80,7 @@ pub fn handle_cybersecurity() {
     }
     run_command_with_spinner("distrobox-enter", vec!["-n", "cybersecurity", "--", "sudo", "pacman", "-Syu", "--noconfirm"], "Updating system");
     let home = std::env::var("HOME").unwrap_or_default();
-    let select_bin = format!("{}/.hackeros/hacker-select", home);
+    let select_bin = format!("{}/.hackeros/hacker/hacker-select", home);
     let select_output = Command::new(&select_bin).arg("-mode").arg("cyber").output().expect("Failed to run hacker-select");
     if !select_output.status.success() {
         println!("{}", "Error running hacker-select".red().bold().on_black());
@@ -106,7 +103,6 @@ pub fn handle_cybersecurity() {
     }
     println!("{}", "========== Cybersecurity Setup Complete ==========".green().bold().on_black());
 }
-
 pub fn handle_gaming() {
     println!("{}", "========== Installing Gaming Tools ==========".cyan().bold().on_black());
     run_command_with_spinner("flatpak", vec!["remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"], "Adding flathub repo");
