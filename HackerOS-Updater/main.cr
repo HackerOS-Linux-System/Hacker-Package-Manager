@@ -12,7 +12,7 @@ RESET = "\e[0m"
 # Paths
 HACKEROS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-hackeros.sh"
 WALLPAPERS_UPDATE_SCRIPT = "/usr/share/HackerOS/Scripts/Bin/update-wallpapers.sh"
-BIN_PATH = "#{ENV["HOME"]}/.hackeros/hacker/HackerOS-Updates/HackerOS-Updater"
+BIN_PATH = Process.executable_path.not_nil!
 AUTO_SCRIPT_PATH = "#{ENV["HOME"]}/.hackeros/auto-update.sh" # Script to wait for internet
 
 def display_header(title : String)
