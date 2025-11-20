@@ -7,6 +7,9 @@ require "colorize"
 RED = "\e[31m"
 GREEN = "\e[32m"
 BLUE = "\e[34m"
+YELLOW = "\e[33m"
+CYAN = "\e[36m"
+MAGENTA = "\e[35m"
 RESET = "\e[0m"
 
 # Paths
@@ -117,13 +120,14 @@ end
 
 def show_gui_menu
   loop do
-    puts "\n[Q]uit - Close this terminal"
-    puts "[R]eboot - Reboot the system"
-    puts "[S]hutdown - Shutdown the system"
-    puts "[L]og out - Log out from current session"
-    puts "[T]erminal - Open a new Alacritty terminal"
-    puts "[A]utomatic Updates - Enable automatic updates on boot"
-    print "Select Your Choice: "
+    puts "\n#{YELLOW}=== HackerOS Updater Menu ===#{RESET}"
+    puts "#{GREEN}[Q]uit#{RESET} #{CYAN}- Close this terminal#{RESET}"
+    puts "#{GREEN}[R]eboot#{RESET} #{CYAN}- Reboot the system#{RESET}"
+    puts "#{GREEN}[S]hutdown#{RESET} #{CYAN}- Shutdown the system#{RESET}"
+    puts "#{GREEN}[L]og out#{RESET} #{CYAN}- Log out from current session#{RESET}"
+    puts "#{GREEN}[T]erminal#{RESET} #{CYAN}- Open a new Alacritty terminal#{RESET}"
+    puts "#{GREEN}[A]utomatic Updates#{RESET} #{CYAN}- Enable automatic updates on boot#{RESET}"
+    print "#{MAGENTA}Enter your choice (press key without Enter): #{RESET}"
     choice = ""
     STDIN.raw do |io|
       byte = io.read_byte
