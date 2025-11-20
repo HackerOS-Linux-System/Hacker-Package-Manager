@@ -123,8 +123,15 @@ def show_gui_menu
     puts "[L]og out - Log out from current session"
     puts "[T]erminal - Open a new Alacritty terminal"
     puts "[A]utomatic Updates - Enable automatic updates on boot"
-    print "Enter your choice: "
-    choice = gets.try(&.chomp.upcase)
+    print "Enter your choice (press key without Enter): "
+    choice = ""
+    STDIN.raw do |io|
+      byte = io.read_byte
+      if byte
+        choice = byte.chr.to_s.upcase
+        puts choice # Echo the choice
+      end
+    end
     case choice
     when "Q"
       exit(0)
@@ -133,8 +140,8 @@ def show_gui_menu
     when "S"
       run_command("sudo shutdown -h now")
     when "L"
-      # Assuming a desktop environment like GNOME or KDE; adjust if needed
-      run_command("gnome-session-quit --logout --no-prompt") # or qdbus org.kde.ksmserver /KSMServer logout 0 0 0 for KDE
+      # For KDE
+      run_command("qdbus org.kde.ksmserver /KSMServer logout 0 0 0")
     when "T"
       Process.new("alacritty", input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
     when "A"
