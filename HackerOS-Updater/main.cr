@@ -127,7 +127,7 @@ def show_gui_menu
     puts "#{GREEN}[L]og out#{RESET} #{CYAN}- Log out from current session#{RESET}"
     puts "#{GREEN}[T]erminal#{RESET} #{CYAN}- Open a new Alacritty terminal#{RESET}"
     puts "#{GREEN}[A]utomatic Updates#{RESET} #{CYAN}- Enable automatic updates on boot#{RESET}"
-    print "#{MAGENTA}Enter your choice (press key without Enter): #{RESET}"
+    print "#{MAGENTA}Enter your choice: #{RESET}"
     choice = ""
     STDIN.raw do |io|
       byte = io.read_byte
