@@ -123,7 +123,7 @@ def show_gui_menu
     puts "[L]og out - Log out from current session"
     puts "[T]erminal - Open a new Alacritty terminal"
     puts "[A]utomatic Updates - Enable automatic updates on boot"
-    print "Enter your choice (press key without Enter): "
+    print "Select Your Choice: "
     choice = ""
     STDIN.raw do |io|
       byte = io.read_byte
