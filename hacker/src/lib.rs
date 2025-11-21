@@ -32,6 +32,10 @@ pub enum UnpackCommands {
     HackerMode,
     /// Install and setup gamescope-session-steam
     GamescopeSessionSteam,
+    /// Install Xanmod kernel
+    Xanmod,
+    /// Install Liquorix kernel
+    Liquorix,
 }
 
 #[derive(Subcommand)]
