@@ -1,6 +1,6 @@
 [package]
 name = "hacker"
-version = "1.5.0"
+version = "1.7.0"
 edition = "2021"
 
 [dependencies]
@@ -8,3 +8,5 @@ clap = { version = "4.5", features = ["derive"] }
 colored = "2.1"
 uuid = { version = "1.10", features = ["v4"] }
 rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
