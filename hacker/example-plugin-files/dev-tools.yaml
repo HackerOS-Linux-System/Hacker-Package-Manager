@@ -1,0 +1,20 @@
+description: "Plugin instalujący podstawowe narzędzia deweloperskie, w tym edytory i kompilatory. Obsługuje instalację via apt i flatpak."
+commands:
+  - program: "sudo"
+    args:
+      - "apt"
+      - "install"
+      - "-y"
+      - "git"
+      - "curl"
+    message: "Instalowanie git i curl via apt"
+  - program: "flatpak"
+    args:
+      - "install"
+      - "-y"
+      - "flathub"
+      - "com.visualstudio.code"
+    message: "Instalowanie Visual Studio Code via Flatpak"
+  - program: "echo"
+    args: []  # Pusta lista argumentów (opcjonalna, jeśli komenda nie wymaga argumentów)
+    message: "Wyświetlanie komunikatu o zakończeniu instalacji"
