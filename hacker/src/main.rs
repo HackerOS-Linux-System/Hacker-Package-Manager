@@ -5,7 +5,7 @@ use std::process::Command;
 use std::io::{self, Write};
 
 #[derive(Parser)]
-#[command(name = "hacker", about = "A vibrant CLI tool for managing hacker tools, gaming, and system utilities", version = "1.5.0")]
+#[command(name = "hacker", about = "A vibrant CLI tool for managing hacker tools, gaming, and system utilities", version = "1.7.0")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -74,6 +74,10 @@ enum Commands {
     Plugin {
         #[command(subcommand)]
         plugin_command: PluginCommands,
+    },
+    /// Restart a service
+    Restart {
+        service: String,
     },
 }
 
@@ -169,5 +173,12 @@ fn main() {
             }
         }
         Commands::Plugin { plugin_command } => handle_plugin(plugin_command),
+        Commands::Restart { service } => {
+            if service == "pipewire" {
+                run_command_with_spinner("systemctl", vec!["--user", "restart", "pipewire"], "Restarting pipewire");
+            } else {
+                println!("{}", format!("Unknown service: {}", service).red().bold().on_black());
+            }
+        }
     }
 }
