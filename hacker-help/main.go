@@ -19,6 +19,16 @@ type Command struct {
 
 var commands = []Command{
 	{
+		Name:        "hacker unpack xanmod",
+		Description: "Install the xanmod kernel.",
+		Details:     "Note: After restarting the system, there will be no default kernel, you will only have the xanmod kernel.",
+	},
+	{
+		Name:        "hacker unpack liquorix",
+		Description: "Install liquorix kernel",
+		Details:     "Note: After restarting the system, there will be no default kernel, you will only have the liquorix kernel.",
+	},
+	{
 		Name:        "hacker unpack add-ons",
 		Description: "Install Wine, BoxBuddy, Winezgui, Gearlever",
 		Details:     "This command installs add-ons like Wine for running Windows applications, BoxBuddy for managing Flatpaks, Winezgui for Wine GUI, and Gearlever for additional utilities.",
@@ -192,6 +202,11 @@ var commands = []Command{
 		Name:        "hacker plugin apply",
 		Description: "Apply all enabled plugins (run their commands)",
 		Details:     "Runs plugins.",
+	},
+	{
+		Name:        "hacker restart <service>",
+		Description: "Restart custom systemctl service",
+		Details:     "Restart services.",
 	},
 }
 
