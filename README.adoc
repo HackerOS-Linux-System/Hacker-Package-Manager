@@ -57,6 +57,11 @@ Poniżej znajduje się lista komend w formie tabeli:
 |`hacker shell` |Wejdź do interaktywnego shella.
 |`hacker enter <kontener>` |Wejdź do kontenera Distrobox.
 |`hacker remove-container <kontener>` |Usuń kontener Distrobox.
+|`hacker plugin create <nazwa>` |Utwórz nowy plugin.
+|`hacker plugin enable <nazwa>` |Włącz plugin.
+|`hacker plugin disable <nazwa>` |Wyłącz plugin.
+|`hacker plugin list` |Lista wszystkich pluginów.
+|`hacker plugin apply` |Użyj pluginu.
 
 |===
 
