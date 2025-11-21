@@ -1,14 +1,16 @@
 use clap::{Parser, Subcommand};
 use colored::*;
-use hacker::{display_ascii, handle_run, handle_system, handle_unpack, play_game, run_command_with_spinner, RunCommands, SystemCommands, UnpackCommands};
+use hacker::{display_ascii, handle_run, handle_system, handle_unpack, play_game, run_command_with_spinner, RunCommands, SystemCommands, UnpackCommands, PluginCommands, handle_plugin};
 use std::process::Command;
 use std::io::{self, Write};
+
 #[derive(Parser)]
-#[command(name = "hacker", about = "A vibrant CLI tool for managing hacker tools, gaming, and system utilities", version = "1.4.0")]
+#[command(name = "hacker", about = "A vibrant CLI tool for managing hacker tools, gaming, and system utilities", version = "1.5.0")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
+
 #[derive(Subcommand)]
 enum Commands {
     /// Unpack various toolsets and applications
@@ -68,7 +70,13 @@ enum Commands {
     RemoveContainer {
         container: String,
     },
+    /// Manage plugins
+    Plugin {
+        #[command(subcommand)]
+        plugin_command: PluginCommands,
+    },
 }
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -160,5 +168,6 @@ fn main() {
                 println!("{}", "Cancelled.".yellow().bold().on_black());
             }
         }
+        Commands::Plugin { plugin_command } => handle_plugin(plugin_command),
     }
 }
