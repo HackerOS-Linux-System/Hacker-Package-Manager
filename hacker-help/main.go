@@ -168,6 +168,31 @@ var commands = []Command{
 		Description: "Remove a distrobox container",
 		Details:     "Stops and removes the specified distrobox container after confirmation.",
 	},
+	{
+		Name:        "hacker plugin create <name>",
+		Description: "Create a new plugin template",
+		Details:     "Create new plugin in .yaml.",
+	},
+	{
+		Name:        "hacker plugin enable <name>",
+		Description: "Enable a plugin",
+		Details:     "Enable plugins.",
+	},
+	{
+		Name:        "hacker plugin disable <name>",
+		Description: "Disable a plugin",
+		Details:     "Disable plugins.",
+	},
+	{
+		Name:        "hacker plugin list",
+		Description: "List available and enabled plugins",
+		Details:     "List for every plugin.",
+	},
+	{
+		Name:        "hacker plugin apply",
+		Description: "Apply all enabled plugins (run their commands)",
+		Details:     "Runs plugins.",
+	},
 }
 
 type item struct {
