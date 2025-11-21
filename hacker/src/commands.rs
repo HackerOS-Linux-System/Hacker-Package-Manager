@@ -153,6 +153,16 @@ pub fn handle_unpack(unpack_command: UnpackCommands) {
             run_command_with_spinner("hackerc", vec!["run", &unpack_path], "Running unpack.hacker");
             println!("{}", "========== gamescope-session-steam Setup Complete ==========".green().bold().on_black());
         }
+        UnpackCommands::Xanmod => {
+            println!("{}", "========== Unpacking Xanmod ==========".cyan().bold().on_black());
+            run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/unpack-xanmod.sh"], "Running unpack-xanmod.sh");
+            println!("{}", "========== Xanmod Unpack Complete ==========".green().bold().on_black());
+        }
+        UnpackCommands::Liquorix => {
+            println!("{}", "========== Unpacking Liquorix ==========".cyan().bold().on_black());
+            run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/unpack-liquorix.sh"], "Running unpack-liquorix.sh");
+            println!("{}", "========== Liquorix Unpack Complete ==========".green().bold().on_black());
+        }
     }
 }
 
@@ -181,7 +191,6 @@ pub fn handle_plugin(plugin_command: PluginCommands) {
     let home = std::env::var("HOME").unwrap_or_default();
     let config_dir = format!("{}/.config/hacker", home);
     std::fs::create_dir_all(&config_dir).expect("Failed to create config dir");
-
     match plugin_command {
         PluginCommands::Create { name } => {
             let path = format!("{}/{}.yaml", config_dir, name);
