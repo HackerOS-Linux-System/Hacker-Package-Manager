@@ -1,4 +1,5 @@
 *.yaml linguist-detectable=true
+*.yaml linguist-documentation=false
 *.yaml linguist-language=YAML
 
 *.cr linguist-detectable=true
