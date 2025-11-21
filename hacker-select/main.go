@@ -187,7 +187,7 @@ func main() {
 		items = append(items, item{typ: app, title: "lutris", desc: "APT - Game launcher", value: "lutris"})
 		items = append(items, item{typ: app, title: "Steam", desc: "Flatpak - Gaming platform", value: "com.valvesoftware.Steam"})
 		items = append(items, item{typ: app, title: "Pika Torrent", desc: "Flatpak - Torrent client", value: "io.github.giantpinkrobots.varia"})
-		items = append(items, item{typ: app, title: "ProtonUp-Qt", desc: "Flatpak - Proton manager", value: "net.davidotek.pupgui2"})
+		items = append(items, item{typ: app, title: "ProtonPlus", desc: "Flatpak - Proton manager", value: "com.vysp3r.ProtonPlus"})
 		items = append(items, item{typ: app, title: "Heroic Games Launcher", desc: "Flatpak - Epic/GOG launcher", value: "com.heroicgameslauncher.hgl"})
 		items = append(items, item{typ: app, title: "protontricks", desc: "Flatpak - Proton utils", value: "protontricks"})
 		items = append(items, item{typ: app, title: "Discord", desc: "Flatpak - Chat app", value: "com.discordapp.Discord"})
