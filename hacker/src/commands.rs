@@ -3,7 +3,25 @@ use crate::utils::{handle_cybersecurity, handle_gaming, run_command_with_spinner
 use crate::UnpackCommands;
 use crate::SystemCommands;
 use crate::RunCommands;
+use crate::PluginCommands;
 use std::process::Command;
+use std::path::Path;
+use std::os::unix::fs::symlink;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct Plugin {
+    description: Option<String>,
+    commands: Vec<PluginCommand>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PluginCommand {
+    program: String,
+    args: Vec<String>,
+    message: String,
+}
+
 pub fn handle_unpack(unpack_command: UnpackCommands) {
     match unpack_command {
         UnpackCommands::AddOns => {
@@ -137,6 +155,7 @@ pub fn handle_unpack(unpack_command: UnpackCommands) {
         }
     }
 }
+
 pub fn handle_system(system_command: SystemCommands) {
     match system_command {
         SystemCommands::Logs => {
@@ -145,6 +164,7 @@ pub fn handle_system(system_command: SystemCommands) {
         }
     }
 }
+
 pub fn handle_run(cmd: RunCommands) {
     match cmd {
         RunCommands::UpdateSystem => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-system.sh"], "Updating system"),
@@ -154,5 +174,106 @@ pub fn handle_run(cmd: RunCommands) {
         RunCommands::HackerosGameMode => run_command_with_spinner("", vec!["/usr/share/HackerOS/Scripts/HackerOS-Apps/HackerOS-Game-Mode.AppImage"], "Running HackerOS Game Mode"),
         RunCommands::UpdateHackeros => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-hackeros.sh"], "Updating HackerOS"),
         RunCommands::UpdateWallpapers => run_command_with_spinner("sudo", vec!["/usr/share/HackerOS/Scripts/Bin/update-wallpapers.sh"], "Updating wallpapers"),
+    }
+}
+
+pub fn handle_plugin(plugin_command: PluginCommands) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config_dir = format!("{}/.config/hacker", home);
+    std::fs::create_dir_all(&config_dir).expect("Failed to create config dir");
+
+    match plugin_command {
+        PluginCommands::Create { name } => {
+            let path = format!("{}/{}.yaml", config_dir, name);
+            if Path::new(&path).exists() {
+                println!("{}", format!("Plugin {} already exists.", name).red().bold().on_black());
+                return;
+            }
+            let template = Plugin {
+                description: Some("Example plugin".to_string()),
+                commands: vec![PluginCommand {
+                    program: "sudo".to_string(),
+                    args: vec!["apt".to_string(), "install".to_string(), "-y".to_string(), "vim".to_string()],
+                    message: "Installing vim".to_string(),
+                }],
+            };
+            let yaml = serde_yaml::to_string(&template).expect("Failed to serialize template");
+            std::fs::write(&path, yaml).expect("Failed to write template");
+            println!("{}", format!("Created plugin template at {}", path).green().bold().on_black());
+        }
+        PluginCommands::Enable { name } => {
+            let plugin_file = format!("{}/{}.yaml", config_dir, name);
+            if !Path::new(&plugin_file).exists() {
+                println!("{}", format!("Plugin {} does not exist.", name).red().bold().on_black());
+                return;
+            }
+            let enabled_dir = format!("{}/enabled", config_dir);
+            std::fs::create_dir_all(&enabled_dir).expect("Failed to create enabled dir");
+            let enabled_file = format!("{}/{}.yaml", enabled_dir, name);
+            if Path::new(&enabled_file).exists() {
+                println!("{}", format!("Plugin {} is already enabled.", name).yellow().bold().on_black());
+                return;
+            }
+            symlink(&plugin_file, &enabled_file).expect("Failed to create symlink");
+            println!("{}", format!("Enabled plugin {}", name).green().bold().on_black());
+        }
+        PluginCommands::Disable { name } => {
+            let enabled_dir = format!("{}/enabled", config_dir);
+            let enabled_file = format!("{}/{}.yaml", enabled_dir, name);
+            if !Path::new(&enabled_file).exists() {
+                println!("{}", format!("Plugin {} is not enabled.", name).yellow().bold().on_black());
+                return;
+            }
+            std::fs::remove_file(&enabled_file).expect("Failed to remove symlink");
+            println!("{}", format!("Disabled plugin {}", name).green().bold().on_black());
+        }
+        PluginCommands::List => {
+            println!("{}", "Available plugins:".cyan().bold().on_black());
+            let entries = std::fs::read_dir(&config_dir).expect("Failed to read config dir");
+            for entry in entries {
+                let path = entry.expect("Failed to get entry").path();
+                if path.extension().and_then(|s| s.to_str()) == Some("yaml") && !path.is_dir() {
+                    let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                    if name != "config" { // Skip if any config.yaml
+                        println!("{}", format!("- {}", name).white().bold());
+                    }
+                }
+            }
+            let enabled_dir = format!("{}/enabled", config_dir);
+            if Path::new(&enabled_dir).exists() {
+                println!("{}", "Enabled plugins:".cyan().bold().on_black());
+                let enabled_entries = std::fs::read_dir(&enabled_dir).expect("Failed to read enabled dir");
+                for entry in enabled_entries {
+                    let path = entry.expect("Failed to get entry").path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                        println!("{}", format!("- {}", name).white().bold());
+                    }
+                }
+            } else {
+                println!("{}", "No enabled plugins.".yellow().bold().on_black());
+            }
+        }
+        PluginCommands::Apply => {
+            let enabled_dir = format!("{}/enabled", config_dir);
+            if !Path::new(&enabled_dir).exists() {
+                println!("{}", "No enabled plugins.".yellow().bold().on_black());
+                return;
+            }
+            let entries = std::fs::read_dir(&enabled_dir).expect("Failed to read enabled dir");
+            for entry in entries {
+                let path = entry.expect("Failed to get entry").path();
+                if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                    let content = std::fs::read_to_string(&path).expect("Failed to read plugin file");
+                    let plugin: Plugin = serde_yaml::from_str(&content).expect("Failed to parse YAML");
+                    let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                    println!("{}", format!("Applying plugin {}: {}", name, plugin.description.unwrap_or_default()).cyan().bold().on_black());
+                    for cmd in plugin.commands {
+                        run_command_with_spinner(&cmd.program, cmd.args.iter().map(|s| s.as_str()).collect(), &cmd.message);
+                    }
+                }
+            }
+            println!("{}", "All enabled plugins applied.".green().bold().on_black());
+        }
     }
 }
