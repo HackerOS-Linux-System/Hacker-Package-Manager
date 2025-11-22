@@ -35,7 +35,7 @@ def get_status(success : Bool) : String
   end
 end
 
-def perform_updates : {String, String, String, String, String, String}
+def perform_updates : {String, String, String, String, String, String, String}
   # APT Update
   display_header("System Update")
   apt_success = true
@@ -60,6 +60,11 @@ def perform_updates : {String, String, String, String, String, String}
   fw_success, _ = run_command("sudo fwupdmgr update")
   fw_status = get_status(fw_success)
 
+  # Oh My Zsh Update
+  display_header("Oh My Zsh Update")
+  omz_success, _ = run_command("omz update")
+  omz_status = get_status(omz_success)
+
   # HackerOS Update
   display_header("HackerOS Update")
   hacker_success, _ = run_command(HACKEROS_UPDATE_SCRIPT)
@@ -70,14 +75,15 @@ def perform_updates : {String, String, String, String, String, String}
   wall_success, _ = run_command(WALLPAPERS_UPDATE_SCRIPT)
   wall_status = get_status(wall_success)
 
-  {apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status}
+  {apt_status, flatpak_status, snap_status, fw_status, omz_status, hacker_status, wall_status}
 end
 
-def show_summary(apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status)
+def show_summary(apt_status, flatpak_status, snap_status, fw_status, omz_status, hacker_status, wall_status)
   puts "\nSystem Updates - #{apt_status}"
   puts "Flatpak Updates - #{flatpak_status}"
   puts "Snap Updates - #{snap_status}"
   puts "Firmware Updates - #{fw_status}"
+  puts "Oh My Zsh Updates - #{omz_status}"
   puts "HackerOS Updates - #{hacker_status}"
   puts "Wallpaper Updates - #{wall_status}"
 end
@@ -161,7 +167,6 @@ def main
   gui_mode = false
   disable_auto = false
   auto_mode = false
-
   OptionParser.parse do |parser|
     parser.banner = "Usage: HackerOS-Updater [options]"
     parser.on("--with-gui", "Run in GUI mode with Alacritty") { with_gui = true }
@@ -181,8 +186,8 @@ def main
     return
   end
 
-  apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status = perform_updates
-  show_summary(apt_status, flatpak_status, snap_status, fw_status, hacker_status, wall_status)
+  apt_status, flatpak_status, snap_status, fw_status, omz_status, hacker_status, wall_status = perform_updates
+  show_summary(apt_status, flatpak_status, snap_status, fw_status, omz_status, hacker_status, wall_status)
 
   if gui_mode
     show_gui_menu
