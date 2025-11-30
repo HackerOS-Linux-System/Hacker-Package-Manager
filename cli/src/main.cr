@@ -1,3 +1,4 @@
+# src/main.cr
 require "option_parser"
 
 def display_help
@@ -21,7 +22,7 @@ def main
   end
 
   command = ARGV.shift.downcase
-  home_dir = ENV.fetch("HOME", Dir.home)
+  home_dir = File.expand_path("~")
   apt_frontend_path = File.join(home_dir, ".hackeros", "hpm", "apt-fronted")
   tui_path = File.join(home_dir, ".hackeros", "hpm", "tui")
 
