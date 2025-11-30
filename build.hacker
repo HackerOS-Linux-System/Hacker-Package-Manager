@@ -2,6 +2,7 @@
 // crystal
 // shards
 // cargo
+// python3-tqdm
 > cd tui
 > cargo build --release
 > cd ..
