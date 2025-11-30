@@ -1,0 +1,14 @@
+// python
+// crystal
+// shards
+// cargo
+> cd tui
+> cargo build --release
+> cd ..
+> cd cli
+> crystal build src/main.cr --release
+> sudo mv main hpm
+> cd ..
+> cd apt-fronted
+> python3 -m nuitka --onefile main.py
+> sudo mv main.bin apt-fronted
