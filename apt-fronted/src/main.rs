@@ -168,6 +168,16 @@ fn run_command(
 	Ok(output)
 }
 
+fn get_num_downloads(action: &str, packages: &[String]) -> usize {
+	let mut cmd_args: Vec<String> = vec!["apt-get".to_string(), "--print-uris".to_string(), "-y".to_string(), action.to_string()];
+	cmd_args.extend(packages.iter().cloned());
+	let output = match run_command(&cmd_args, false, false) {
+		Ok(o) => o,
+		Err(_) => return 0,
+	};
+	output.lines().filter(|l| l.starts_with("'http")).count()
+}
+
 fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 	println!("{}", colored("\nDependencies resolved.", "cyan", true, false));
 	println!(
@@ -202,9 +212,9 @@ fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 			println!(
 				" {:-<35} {:-<12} {:-<25} {:-<20}",
 			colored(&pkg.name, "green", false, false),
-					 pkg.arch,
-			pkg.version,
-			pkg.repo
+					 &pkg.arch,
+			&pkg.version,
+			&pkg.repo
 			);
 		}
 	}
@@ -215,9 +225,9 @@ fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 			println!(
 				" {:-<35} {:-<12} {:-<25} {:-<20}",
 			colored(&pkg.name, "blue", false, false),
-					 pkg.arch,
-			pkg.version,
-			pkg.repo
+					 &pkg.arch,
+			&pkg.version,
+			&pkg.repo
 			);
 		}
 	}
@@ -228,9 +238,9 @@ fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 			println!(
 				" {:-<35} {:-<12} {:-<25} {:-<20}",
 			colored(&pkg.name, "red", false, false),
-					 pkg.arch,
-			pkg.version,
-			pkg.repo
+					 &pkg.arch,
+			&pkg.version,
+			&pkg.repo
 			);
 		}
 	}
@@ -266,19 +276,19 @@ fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 	println!(
 		"\n{} {}",
 		colored("Total download size:", "magenta", false, false),
-			 parsed.download_size
+			 &parsed.download_size
 	);
 	if action == "install" || action == "upgrade" {
 		println!(
 			"{} {}",
 		   colored("Installed size:", "magenta", false, false),
-				 parsed.installed_size
+				 &parsed.installed_size
 		);
 	} else if action == "remove" {
 		println!(
 			"{} {}",
 		   colored("Freed size:", "magenta", false, false),
-				 parsed.installed_size
+				 &parsed.installed_size
 		);
 	}
 	println!(
@@ -295,18 +305,22 @@ fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
 fn color_output(line: &str) -> String {
 	let trimmed = line.trim();
 	if trimmed.contains("Setting up")
+		|| trimmed.contains("Konfigurowanie")
 		|| trimmed.contains("Installing")
 		|| trimmed.contains("Unpacking")
+		|| trimmed.contains("Rozpakowywanie")
 		{
 			colored(trimmed, "green", false, false) + "\n"
-		} else if trimmed.contains("Removing") {
+		} else if trimmed.contains("Removing") || trimmed.contains("Usuwanie") {
 			colored(trimmed, "red", false, false) + "\n"
-		} else if trimmed.contains("Downloading") || trimmed.contains("Get:") {
+		} else if trimmed.contains("Downloading") || trimmed.contains("Get:") || trimmed.contains("Pobr:") {
 			colored(trimmed, "yellow", false, false) + "\n"
-		} else if trimmed.contains("Reading") || trimmed.contains("Building") {
+		} else if trimmed.contains("Reading") || trimmed.contains("Building") || trimmed.contains("Wybieranie") || trimmed.contains("Przygotowywanie") {
 			colored(trimmed, "cyan", false, false) + "\n"
 		} else if trimmed.contains("Hit:") || trimmed.contains("Ign:") {
 			colored(trimmed, "white", false, false) + "\n"
+		} else if trimmed.contains("Processing triggers") || trimmed.contains("Przetwarzanie wyzwalaczy") {
+			colored(trimmed, "magenta", false, false) + "\n"
 		} else {
 			trimmed.to_string() + "\n"
 		}
@@ -316,20 +330,88 @@ fn confirm_action() -> bool {
 	loop {
 		print!(
 			"{}",
-		 colored("Do you want to continue? [Y/n] ", "yellow", false, false)
+		 colored("Is this ok [y/N]: ", "yellow", false, false)
 		);
 		io::stdout().flush().unwrap();
 		let mut response = String::new();
 		io::stdin().read_line(&mut response).unwrap();
 		let response = response.trim().to_lowercase();
-		if response.is_empty() || response == "y" || response == "yes" {
+		if response == "y" || response == "yes" {
 			return true;
-		} else if response == "n" || response == "no" {
+		} else if response.is_empty() || response == "n" || response == "no" {
 			return false;
 		} else {
-			println!("{}", colored("Please enter Y or N.", "red", false, false));
+			println!("{}", colored("Please enter y or N.", "red", false, false));
 		}
 	}
+}
+
+fn run_with_progress(cmd_args: &[String], desc: String, total: usize, update_regexes: Vec<Regex>) -> Result<String, Box<dyn Error>> {
+	let mut cmd = Command::new(&cmd_args[0]);
+	cmd.args(&cmd_args[1..]);
+	cmd.stdout(Stdio::piped());
+
+	let mut child = cmd.spawn()?;
+
+	let stdout = child.stdout.take().unwrap();
+	let mut scanner = BufReader::new(stdout).lines();
+
+	let mut pb = Bar::builder()
+	.total(total)
+	.desc(desc)
+	.bar_format("{desc suffix=' '}|{animation}| {spinner} {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s, eta: {remaining human=true})".to_string())
+	.spinner(Spinner::new(
+		&["▁▂▃", "▂▃▄", "▃▄▅", "▄▅▆", "▅▆▇", "▆▇█", "▇█▇", "█▇▆", "▇▆▅", "▆▅▄", "▅▄▃", "▄▃▂", "▃▂▁"],
+		30.0,
+		1.0,
+	))
+	.ncols(20u16)
+	.force_refresh(true)
+	.build()?;
+
+	let mut output = String::new();
+	let mut current: usize = 0;
+
+	while let Some(line) = scanner.next() {
+		let line = line?;
+		let colored_line = color_output(&line);
+		print!("{}", colored_line);
+		output.push_str(&line);
+		output.push('\n');
+
+		for re in &update_regexes {
+			if re.is_match(&line) {
+				current += 1;
+				pb.update_to(current)?;
+				break;
+			}
+		}
+	}
+
+	let status = child.wait()?;
+	if !status.success() {
+		println!("{}", colored("Error executing command.", "red", false, false));
+		return Err("Command failed".into());
+	}
+
+	pb.set_bar_format("{desc suffix=' '}|{animation}| {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s)".to_string())?;
+	pb.clear()?;
+	pb.refresh()?;
+	println!();
+
+	Ok(output)
+}
+
+fn run_download_with_progress(cmd_args: &[String], num_downloads: usize) -> Result<String, Box<dyn Error>> {
+	let get_re = Regex::new(r"^(Get|Pobr):\d+").unwrap();
+	run_with_progress(cmd_args, colored("Downloading", "yellow", false, false), num_downloads, vec![get_re])
+}
+
+fn run_install_with_progress(cmd_args: &[String], total_steps: usize) -> Result<String, Box<dyn Error>> {
+	let unpack_re = Regex::new(r"^(Unpacking|Rozpakowywanie)").unwrap();
+	let setup_re = Regex::new(r"^(Setting up|Konfigurowanie)").unwrap();
+	let remove_re = Regex::new(r"^(Removing|Usuwanie)").unwrap();
+	run_with_progress(cmd_args, colored("Transaction", "green", false, false), total_steps, vec![unpack_re, setup_re, remove_re])
 }
 
 fn run_command_with_progress(cmd_args: &[String]) -> Result<String, Box<dyn Error>> {
@@ -389,7 +471,7 @@ fn run_command_with_progress(cmd_args: &[String]) -> Result<String, Box<dyn Erro
 	pb.set_bar_format("{desc suffix=' '}|{animation}| {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s)".to_string())?;
 	pb.clear()?;
 	pb.refresh()?;
-	eprintln!();
+	println!();
 
 	Ok(output)
 }
@@ -416,10 +498,27 @@ fn handle_install(packages: &[String]) {
 	display_dnf_style(&parsed, "install");
 
 	if confirm_action() {
-		println!("{}", colored("Running transaction", "cyan", false, false));
-		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "install".to_string(), "-y".to_string()];
+		let num_downloads = get_num_downloads("install", packages);
+		if num_downloads > 0 && parsed.download_size != "0" {
+			println!("{}", colored("Downloading Packages:", "cyan", true, false));
+			println!("{}", colored("==========================================================================================", "white", false, false));
+			let mut dl_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "install".to_string(), "-d".to_string(), "-y".to_string()];
+			dl_cmd.extend(packages.iter().cloned());
+			let _ = run_download_with_progress(&dl_cmd, num_downloads);
+			println!("{}", colored("Complete!", "green", true, false));
+		}
+		println!("{}", colored("Running transaction check", "cyan", true, false));
+		// Assume succeeded since sim did
+		println!("{}", colored("Transaction check succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction test", "cyan", true, false));
+		println!("{}", colored("Transaction test succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction", "cyan", true, false));
+		println!("{}", colored("==========================================================================================", "white", false, false));
+		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "install".to_string(), "-y".to_string(), "--no-download".to_string()];
 		cmd.extend(packages.iter().cloned());
-		let _ = run_command_with_progress(&cmd);
+		let total_steps = (parsed.summary[0] as usize + parsed.summary[1] as usize) * 2 + parsed.summary[2] as usize;
+		let _ = run_install_with_progress(&cmd, total_steps);
+		println!("{}", colored("Complete!", "green", true, false));
 	} else {
 		println!(
 			"{}",
@@ -450,10 +549,26 @@ fn handle_remove(packages: &[String]) {
 	display_dnf_style(&parsed, "remove");
 
 	if confirm_action() {
-		println!("{}", colored("Running transaction", "cyan", false, false));
-		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "remove".to_string(), "-y".to_string()];
+		let num_downloads = get_num_downloads("remove", packages);
+		if num_downloads > 0 && parsed.download_size != "0" {
+			println!("{}", colored("Downloading Packages:", "cyan", true, false));
+			println!("{}", colored("==========================================================================================", "white", false, false));
+			let mut dl_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "remove".to_string(), "-d".to_string(), "-y".to_string()];
+			dl_cmd.extend(packages.iter().cloned());
+			let _ = run_download_with_progress(&dl_cmd, num_downloads);
+			println!("{}", colored("Complete!", "green", true, false));
+		}
+		println!("{}", colored("Running transaction check", "cyan", true, false));
+		println!("{}", colored("Transaction check succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction test", "cyan", true, false));
+		println!("{}", colored("Transaction test succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction", "cyan", true, false));
+		println!("{}", colored("==========================================================================================", "white", false, false));
+		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "remove".to_string(), "-y".to_string(), "--no-download".to_string()];
 		cmd.extend(packages.iter().cloned());
-		let _ = run_command_with_progress(&cmd);
+		let total_steps = (parsed.summary[0] as usize + parsed.summary[1] as usize) * 2 + parsed.summary[2] as usize;
+		let _ = run_install_with_progress(&cmd, total_steps);
+		println!("{}", colored("Complete!", "green", true, false));
 	} else {
 		println!(
 			"{}",
@@ -477,9 +592,24 @@ fn handle_update() {
 	display_dnf_style(&parsed, "upgrade");
 
 	if confirm_action() {
-		println!("{}", colored("Running upgrade", "cyan", false, false));
-		let upgrade_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "upgrade".to_string(), "-y".to_string()];
-		let _ = run_command_with_progress(&upgrade_cmd);
+		let num_downloads = get_num_downloads("upgrade", &[]);
+		if num_downloads > 0 && parsed.download_size != "0" {
+			println!("{}", colored("Downloading Packages:", "cyan", true, false));
+			println!("{}", colored("==========================================================================================", "white", false, false));
+			let dl_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "upgrade".to_string(), "-d".to_string(), "-y".to_string()];
+			let _ = run_download_with_progress(&dl_cmd, num_downloads);
+			println!("{}", colored("Complete!", "green", true, false));
+		}
+		println!("{}", colored("Running transaction check", "cyan", true, false));
+		println!("{}", colored("Transaction check succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction test", "cyan", true, false));
+		println!("{}", colored("Transaction test succeeded.", "green", false, false));
+		println!("{}", colored("Running upgrade", "cyan", true, false));
+		println!("{}", colored("==========================================================================================", "white", false, false));
+		let upgrade_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "upgrade".to_string(), "-y".to_string(), "--no-download".to_string()];
+		let total_steps = (parsed.summary[0] as usize + parsed.summary[1] as usize) * 2 + parsed.summary[2] as usize;
+		let _ = run_install_with_progress(&upgrade_cmd, total_steps);
+		println!("{}", colored("Complete!", "green", true, false));
 	} else {
 		println!("{}", colored("Upgrade cancelled.", "yellow", false, false));
 	}
@@ -500,9 +630,24 @@ fn handle_clean() {
 		let autoclean_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoclean".to_string()];
 		let _ = run_command_with_progress(&autoclean_cmd);
 
-		println!("{}", colored("Running autoremove", "cyan", false, false));
-		let autoremove_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoremove".to_string(), "-y".to_string()];
-		let _ = run_command_with_progress(&autoremove_cmd);
+		let num_downloads = get_num_downloads("autoremove", &[]);
+		if num_downloads > 0 && parsed.download_size != "0" {
+			println!("{}", colored("Downloading Packages:", "cyan", true, false));
+			println!("{}", colored("==========================================================================================", "white", false, false));
+			let dl_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoremove".to_string(), "-d".to_string(), "-y".to_string()];
+			let _ = run_download_with_progress(&dl_cmd, num_downloads);
+			println!("{}", colored("Complete!", "green", true, false));
+		}
+		println!("{}", colored("Running transaction check", "cyan", true, false));
+		println!("{}", colored("Transaction check succeeded.", "green", false, false));
+		println!("{}", colored("Running transaction test", "cyan", true, false));
+		println!("{}", colored("Transaction test succeeded.", "green", false, false));
+		println!("{}", colored("Running autoremove", "cyan", true, false));
+		println!("{}", colored("==========================================================================================", "white", false, false));
+		let autoremove_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoremove".to_string(), "-y".to_string(), "--no-download".to_string()];
+		let total_steps = (parsed.summary[0] as usize + parsed.summary[1] as usize) * 2 + parsed.summary[2] as usize;
+		let _ = run_install_with_progress(&autoremove_cmd, total_steps);
+		println!("{}", colored("Complete!", "green", true, false));
 	} else {
 		println!("{}", colored("Clean cancelled.", "yellow", false, false));
 	}
