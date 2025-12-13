@@ -1,10 +1,9 @@
-module github.com/michal92299/apt-frontend
+[package]
+name = "apt-frontend"
+version = "0.2.0"
+edition = "2021"
 
-go 1.25
-
-require (
-    github.com/pterm/pterm v0.12.82
-    github.com/charmbracelet/bubbletea v1.3.10
-    github.com/charmbracelet/lipgloss v1.1.0
-    github.com/schollz/progressbar/v3 v3.18.0
-)
+[dependencies]
+colored = "2"
+regex = "1"
+kdam = { version = "0.6", features = ["template", "spinner"] }
