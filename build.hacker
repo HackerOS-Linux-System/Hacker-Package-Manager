@@ -14,8 +14,7 @@
 > sudo mv main hpm
 > cd ..
 > cd apt-fronted
-> go get apt-fronted
-> go build
+> cargo build --release
 > cd ..
 > cd community
 > cd source-code
