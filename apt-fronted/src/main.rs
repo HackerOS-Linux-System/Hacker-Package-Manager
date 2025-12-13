@@ -1,417 +1,544 @@
-package main
+use colored::*;
+use kdam::{Bar, BarExt, Spinner};
+use regex::Regex;
+use std::env;
+use std::error::Error;
+use std::io::{self, BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
+use std::str::FromStr;
 
-import (
-	"bufio"
-	"fmt"
-	"os"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"strings"
-
-	"github.com/schollz/progressbar/v3"
-)
-
-const (
-	Reset     = "\033[0m"
-	Bold      = "\033[1m"
-	Underline = "\033[4m"
-	Black     = "\033[30m"
-	Red       = "\033[31m"
-	Green     = "\033[32m"
-	Yellow    = "\033[33m"
-	Blue      = "\033[34m"
-	Magenta   = "\033[35m"
-	Cyan      = "\033[36m"
-	White     = "\033[37m"
-)
-
-func Colored(text, color string, bold, underline bool) string {
-	c := ""
-	switch strings.ToUpper(color) {
-		case "BLACK":
-			c = Black
-		case "RED":
-			c = Red
-		case "GREEN":
-			c = Green
-		case "YELLOW":
-			c = Yellow
-		case "BLUE":
-			c = Blue
-		case "MAGENTA":
-			c = Magenta
-		case "CYAN":
-			c = Cyan
-		case "WHITE":
-			c = White
-		default:
-			c = Reset
-	}
+fn colored(text: &str, color: &str, bold: bool, underline: bool) -> String {
+	let mut s = String::from(text).normal();
+	s = match color.to_uppercase().as_str() {
+		"BLACK" => s.black(),
+		"RED" => s.red(),
+		"GREEN" => s.green(),
+		"YELLOW" => s.yellow(),
+		"BLUE" => s.blue(),
+		"MAGENTA" => s.magenta(),
+		"CYAN" => s.cyan(),
+		"WHITE" => s.white(),
+		_ => s,
+	};
 	if bold {
-		c += Bold
+		s = s.bold();
 	}
 	if underline {
-		c += Underline
+		s = s.underline();
 	}
-	return c + text + Reset
+	s.to_string()
 }
 
-type Package struct {
-	Name    string
-	Version string
-	Repo    string
-	Arch    string
+#[derive(Clone)]
+struct Package {
+	name: String,
+	version: String,
+	repo: String,
+	arch: String,
 }
 
-type ParsedOutput struct {
-	Installing    []Package
-	Upgrading     []Package
-	Removing      []Package
-	DownloadSize  string
-	InstalledSize string
-	Summary       [3]int // 0: install, 1: upgrade, 2: remove
+struct ParsedOutput {
+	installing: Vec<Package>,
+	upgrading: Vec<Package>,
+	removing: Vec<Package>,
+	download_size: String,
+	installed_size: String,
+	summary: [i32; 3], // 0: install, 1: upgrade, 2: remove
 }
 
-func ParseAptSimulate(output string) ParsedOutput {
-	installing := []Package{}
-	upgrading := []Package{}
-	removing := []Package{}
-	downloadSize := "0"
-	installedSize := "0"
-	summary := [3]int{0, 0, 0}
+fn parse_apt_simulate(output: &str) -> ParsedOutput {
+	let mut installing: Vec<Package> = Vec::new();
+	let mut upgrading: Vec<Package> = Vec::new();
+	let mut removing: Vec<Package> = Vec::new();
+	let mut download_size = "0".to_string();
+	let mut installed_size = "0".to_string();
+	let mut summary = [0, 0, 0];
 
-	lines := strings.Split(output, "\n")
-	instRe := regexp.MustCompile(`Inst (\S+) (?:\[(\S+)\] )?\((\S+) ([\S/]+) (?:\[(\S+)\])?\)`)
-	remvRe := regexp.MustCompile(`Remv (\S+) \[(\S+)\]`)
-	downloadRe := regexp.MustCompile(`Need to get ([\d.,]+ [kMG]?B) of archives.`)
-	installedRe := regexp.MustCompile(`After this operation, ([\d.,]+ [kMG]?B) (?:of additional disk space will be used|disk space will be freed).`)
-	summaryRe := regexp.MustCompile(`(\d+) (?:packages? )?upgraded, (\d+) newly installed, (\d+) to remove and (\d+) not upgraded.`)
+	let inst_re = Regex::new(r"Inst (\S+) (?:\[(\S+)\] )?\((\S+) ([\S/]+) (?:\[(\S+)\])?\)").unwrap();
+	let remv_re = Regex::new(r"Remv (\S+) \[(\S+)\]").unwrap();
+	let download_re = Regex::new(r"Need to get ([\d.,]+ [kMG]?B) of archives.").unwrap();
+	let installed_re = Regex::new(r"After this operation, ([\d.,]+ [kMG]?B) (?:of additional disk space will be used|disk space will be freed).").unwrap();
+	let summary_re = Regex::new(r"(\d+) (?:packages? )?upgraded, (\d+) newly installed, (\d+) to remove and (\d+) not upgraded.").unwrap();
 
-	for _, line := range lines {
-		if instMatch := instRe.FindStringSubmatch(line); instMatch != nil {
-			name := instMatch[1]
-			currentVer := instMatch[2]
-			newVer := instMatch[3]
-			repo := instMatch[4]
-			arch := instMatch[5]
-			if arch == "" {
-				arch = "unknown"
-			}
-			version := newVer
-			if version == "" {
-				version = currentVer
-			}
-			pkg := Package{Name: name, Version: version, Repo: repo, Arch: arch}
-			if currentVer != "" {
-				upgrading = append(upgrading, pkg)
+	for line in output.lines() {
+		if let Some(caps) = inst_re.captures(line) {
+			let name = caps[1].to_string();
+			let current_ver = caps.get(2).map_or("".to_string(), |m| m.as_str().to_string());
+			let new_ver = caps[3].to_string();
+			let repo = caps[4].to_string();
+			let arch = caps.get(5).map_or("unknown".to_string(), |m| m.as_str().to_string());
+			let version = if !new_ver.is_empty() { new_ver } else { current_ver.clone() };
+			let pkg = Package {
+				name,
+				version,
+				repo,
+				arch,
+			};
+			if !current_ver.is_empty() {
+				upgrading.push(pkg);
 			} else {
-				installing = append(installing, pkg)
+				installing.push(pkg);
 			}
-		} else if remvMatch := remvRe.FindStringSubmatch(line); remvMatch != nil {
-			name := remvMatch[1]
-			ver := remvMatch[2]
-			removing = append(removing, Package{Name: name, Version: ver, Repo: "N/A", Arch: "unknown"})
-		} else if downloadMatch := downloadRe.FindStringSubmatch(line); downloadMatch != nil {
-			downloadSize = downloadMatch[1]
-		} else if installedMatch := installedRe.FindStringSubmatch(line); installedMatch != nil {
-			installedSize = installedMatch[1]
-		} else if summaryMatch := summaryRe.FindStringSubmatch(line); summaryMatch != nil {
-			upgrade, _ := strconv.Atoi(summaryMatch[1])
-			install, _ := strconv.Atoi(summaryMatch[2])
-			remove, _ := strconv.Atoi(summaryMatch[3])
-			summary = [3]int{install, upgrade, remove}
+		} else if let Some(caps) = remv_re.captures(line) {
+			let name = caps[1].to_string();
+			let ver = caps[2].to_string();
+			removing.push(Package {
+				name,
+				version: ver,
+				repo: "N/A".to_string(),
+						  arch: "unknown".to_string(),
+			});
+		} else if let Some(caps) = download_re.captures(line) {
+			download_size = caps[1].to_string();
+		} else if let Some(caps) = installed_re.captures(line) {
+			installed_size = caps[1].to_string();
+		} else if let Some(caps) = summary_re.captures(line) {
+			let upgrade: i32 = FromStr::from_str(&caps[1]).unwrap_or(0);
+			let install: i32 = FromStr::from_str(&caps[2]).unwrap_or(0);
+			let remove: i32 = FromStr::from_str(&caps[3]).unwrap_or(0);
+			summary = [install, upgrade, remove];
 		}
 	}
-	return ParsedOutput{
-		Installing:    installing,
-		Upgrading:     upgrading,
-		Removing:      removing,
-		DownloadSize:  downloadSize,
-		InstalledSize: installedSize,
-		Summary:       summary,
+
+	ParsedOutput {
+		installing,
+		upgrading,
+		removing,
+		download_size,
+		installed_size,
+		summary,
 	}
 }
 
-func RunCommand(cmdArgs []string, simulate, stream bool) (string, error) {
+fn run_command(
+	cmd_args: &[String],
+	simulate: bool,
+	stream: bool,
+) -> Result<String, Box<dyn Error>> {
+	let mut args = cmd_args.to_vec();
 	if simulate {
-		cmdArgs = append(cmdArgs, "-qq") // quieter for simulation
+		args.push("-qq".to_string());
 	}
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	let mut cmd = Command::new(&args[0]);
+	cmd.args(&args[1..]);
+
 	if !stream {
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Println(Colored(fmt.Sprintf("Error executing %s", strings.Join(cmdArgs, " ")), "red", false, false))
-			return "", err
+		let output = cmd.output()?;
+		if !output.status.success() {
+			println!(
+				"{}",
+			colored(
+				&format!("Error executing {}", args.join(" ")),
+					"red",
+		   false,
+		   false
+			)
+			);
+			return Err("Command failed".into());
 		}
-		return string(output), nil
+		return Ok(String::from_utf8_lossy(&output.stdout).to_string());
 	}
-	var output strings.Builder
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
+
+	let mut child = cmd.stdout(Stdio::piped()).spawn()?;
+	let stdout = child.stdout.take().unwrap();
+	let mut scanner = BufReader::new(stdout).lines();
+	let mut output = String::new();
+
+	while let Some(line) = scanner.next() {
+		let line = line?;
+		println!("{}", line);
+		output.push_str(&line);
+		output.push('\n');
 	}
-	if err := cmd.Start(); err != nil {
-		return "", err
+
+	let status = child.wait()?;
+	if !status.success() {
+		println!(
+			"{}",
+		   colored(
+			   &format!("Error executing {}", args.join(" ")),
+				   "red",
+			 false,
+			 false
+		   )
+		);
+		return Err("Command failed".into());
 	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fmt.Println(line)
-		output.WriteString(line + "\n")
-	}
-	if err := cmd.Wait(); err != nil {
-		fmt.Println(Colored(fmt.Sprintf("Error executing %s", strings.Join(cmdArgs, " ")), "red", false, false))
-		return output.String(), err
-	}
-	return output.String(), nil
+
+	Ok(output)
 }
 
-func DisplayDnfStyle(parsed ParsedOutput, action string) {
-	fmt.Println(Colored("\nDependencies resolved.", "cyan", true, false))
-	fmt.Println(Colored("==========================================================================================", "white", false, false))
-	fmt.Printf(" %-35s %-12s %-25s %-20s\n", Colored("Package", "yellow", true, false), Colored("Arch", "yellow", true, false), Colored("Version", "yellow", true, false), Colored("Repository", "yellow", true, false))
-	fmt.Println(Colored("==========================================================================================", "white", false, false))
+fn display_dnf_style(parsed: &ParsedOutput, action: &str) {
+	println!("{}", colored("\nDependencies resolved.", "cyan", true, false));
+	println!(
+		"{}",
+		colored(
+			"==========================================================================================",
+		  "white",
+		  false,
+		  false
+		)
+	);
+	println!(
+		" {:-<35} {:-<12} {:-<25} {:-<20}",
+		colored("Package", "yellow", true, false),
+			 colored("Arch", "yellow", true, false),
+			 colored("Version", "yellow", true, false),
+			 colored("Repository", "yellow", true, false)
+	);
+	println!(
+		"{}",
+		colored(
+			"==========================================================================================",
+		  "white",
+		  false,
+		  false
+		)
+	);
 
-	if len(parsed.Installing) > 0 {
-		fmt.Println(Colored("Installing:", "green", true, false))
-		for _, pkg := range parsed.Installing {
-			fmt.Printf(" %-35s %-12s %-25s %-20s\n", Colored(pkg.Name, "green", false, false), pkg.Arch, pkg.Version, pkg.Repo)
-		}
-	}
-	if len(parsed.Upgrading) > 0 {
-		fmt.Println(Colored("Upgrading:", "blue", true, false))
-		for _, pkg := range parsed.Upgrading {
-			fmt.Printf(" %-35s %-12s %-25s %-20s\n", Colored(pkg.Name, "blue", false, false), pkg.Arch, pkg.Version, pkg.Repo)
-		}
-	}
-	if len(parsed.Removing) > 0 {
-		fmt.Println(Colored("Removing:", "red", true, false))
-		for _, pkg := range parsed.Removing {
-			fmt.Printf(" %-35s %-12s %-25s %-20s\n", Colored(pkg.Name, "red", false, false), pkg.Arch, pkg.Version, pkg.Repo)
+	if !parsed.installing.is_empty() {
+		println!("{}", colored("Installing:", "green", true, false));
+		for pkg in &parsed.installing {
+			println!(
+				" {:-<35} {:-<12} {:-<25} {:-<20}",
+			colored(&pkg.name, "green", false, false),
+					 pkg.arch,
+			pkg.version,
+			pkg.repo
+			);
 		}
 	}
 
-	fmt.Println("\n" + Colored("Transaction Summary", "cyan", true, false))
-	fmt.Println(Colored("==========================================================================================", "white", false, false))
-	fmt.Printf("%s %d Packages\n", Colored("Install", "green", false, false), parsed.Summary[0])
-	fmt.Printf("%s %d Packages\n", Colored("Upgrade", "blue", false, false), parsed.Summary[1])
-	fmt.Printf("%s %d Packages\n", Colored("Remove", "red", false, false), parsed.Summary[2])
-	fmt.Printf("\n%s %s\n", Colored("Total download size:", "magenta", false, false), parsed.DownloadSize)
+	if !parsed.upgrading.is_empty() {
+		println!("{}", colored("Upgrading:", "blue", true, false));
+		for pkg in &parsed.upgrading {
+			println!(
+				" {:-<35} {:-<12} {:-<25} {:-<20}",
+			colored(&pkg.name, "blue", false, false),
+					 pkg.arch,
+			pkg.version,
+			pkg.repo
+			);
+		}
+	}
+
+	if !parsed.removing.is_empty() {
+		println!("{}", colored("Removing:", "red", true, false));
+		for pkg in &parsed.removing {
+			println!(
+				" {:-<35} {:-<12} {:-<25} {:-<20}",
+			colored(&pkg.name, "red", false, false),
+					 pkg.arch,
+			pkg.version,
+			pkg.repo
+			);
+		}
+	}
+
+	println!(
+		"\n{}",
+		colored("Transaction Summary", "cyan", true, false)
+	);
+	println!(
+		"{}",
+		colored(
+			"==========================================================================================",
+		  "white",
+		  false,
+		  false
+		)
+	);
+	println!(
+		"{} {} Packages",
+		colored("Install", "green", false, false),
+			 parsed.summary[0]
+	);
+	println!(
+		"{} {} Packages",
+		colored("Upgrade", "blue", false, false),
+			 parsed.summary[1]
+	);
+	println!(
+		"{} {} Packages",
+		colored("Remove", "red", false, false),
+			 parsed.summary[2]
+	);
+	println!(
+		"\n{} {}",
+		colored("Total download size:", "magenta", false, false),
+			 parsed.download_size
+	);
 	if action == "install" || action == "upgrade" {
-		fmt.Printf("%s %s\n", Colored("Installed size:", "magenta", false, false), parsed.InstalledSize)
+		println!(
+			"{} {}",
+		   colored("Installed size:", "magenta", false, false),
+				 parsed.installed_size
+		);
 	} else if action == "remove" {
-		fmt.Printf("%s %s\n", Colored("Freed size:", "magenta", false, false), parsed.InstalledSize)
+		println!(
+			"{} {}",
+		   colored("Freed size:", "magenta", false, false),
+				 parsed.installed_size
+		);
 	}
-	fmt.Println(Colored("==========================================================================================", "white", false, false) + "\n")
+	println!(
+		"{}\n",
+		colored(
+			"==========================================================================================",
+		  "white",
+		  false,
+		  false
+		)
+	);
 }
 
-func ColorOutput(line string) string {
-	line = strings.TrimSpace(line)
-	if strings.Contains(line, "Setting up") || strings.Contains(line, "Installing") || strings.Contains(line, "Unpacking") {
-		return Colored(line, "green", false, false) + "\n"
-	} else if strings.Contains(line, "Removing") {
-		return Colored(line, "red", false, false) + "\n"
-	} else if strings.Contains(line, "Downloading") || strings.Contains(line, "Get:") {
-		return Colored(line, "yellow", false, false) + "\n"
-	} else if strings.Contains(line, "Reading") || strings.Contains(line, "Building") {
-		return Colored(line, "cyan", false, false) + "\n"
-	} else if strings.Contains(line, "Hit:") || strings.Contains(line, "Ign:") {
-		return Colored(line, "white", false, false) + "\n"
-	}
-	return line + "\n"
-}
-
-func ConfirmAction() bool {
-	for {
-		fmt.Print(Colored("Do you want to continue? [Y/n] ", "yellow", false, false))
-		var response string
-		_, err := fmt.Scanln(&response)
-		if err != nil {
-			response = ""
-		}
-		response = strings.ToLower(strings.TrimSpace(response))
-		if response == "" || response == "y" || response == "yes" {
-			return true
-		} else if response == "n" || response == "no" {
-			return false
+fn color_output(line: &str) -> String {
+	let trimmed = line.trim();
+	if trimmed.contains("Setting up")
+		|| trimmed.contains("Installing")
+		|| trimmed.contains("Unpacking")
+		{
+			colored(trimmed, "green", false, false) + "\n"
+		} else if trimmed.contains("Removing") {
+			colored(trimmed, "red", false, false) + "\n"
+		} else if trimmed.contains("Downloading") || trimmed.contains("Get:") {
+			colored(trimmed, "yellow", false, false) + "\n"
+		} else if trimmed.contains("Reading") || trimmed.contains("Building") {
+			colored(trimmed, "cyan", false, false) + "\n"
+		} else if trimmed.contains("Hit:") || trimmed.contains("Ign:") {
+			colored(trimmed, "white", false, false) + "\n"
 		} else {
-			fmt.Println(Colored("Please enter Y or N.", "red", false, false))
+			trimmed.to_string() + "\n"
+		}
+}
+
+fn confirm_action() -> bool {
+	loop {
+		print!(
+			"{}",
+		 colored("Do you want to continue? [Y/n] ", "yellow", false, false)
+		);
+		io::stdout().flush().unwrap();
+		let mut response = String::new();
+		io::stdin().read_line(&mut response).unwrap();
+		let response = response.trim().to_lowercase();
+		if response.is_empty() || response == "y" || response == "yes" {
+			return true;
+		} else if response == "n" || response == "no" {
+			return false;
+		} else {
+			println!("{}", colored("Please enter Y or N.", "red", false, false));
 		}
 	}
 }
 
-func RunCommandWithProgress(cmdArgs []string) (string, error) {
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
+fn run_command_with_progress(cmd_args: &[String]) -> Result<String, Box<dyn Error>> {
+	let mut cmd = Command::new(&cmd_args[0]);
+	cmd.args(&cmd_args[1..]);
+	cmd.stdout(Stdio::piped());
 
-	bar := progressbar.NewOptions(100,
-				      progressbar.OptionSetDescription(Colored("Progress", "blue", false, false)),
-				      progressbar.OptionSetTheme(progressbar.Theme{
-					      Saucer:        "=",
-					      SaucerHead:    ">",
-					      SaucerPadding: " ",
-					      BarStart:      "[",
-					      BarEnd:        "]",
-				      }),
-			       progressbar.OptionShowBytes(false),
-				      progressbar.OptionShowCount(),
-				      progressbar.OptionSetWidth(20),
-				      progressbar.OptionSetPredictTime(true),
-				      progressbar.OptionSetElapsedTime(true),
-	)
+	let mut child = cmd.spawn()?;
 
-	var output strings.Builder
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		coloredLine := ColorOutput(line)
-		fmt.Print(coloredLine)
-		output.WriteString(line + "\n")
-		if strings.Contains(line, "%") {
-			parts := strings.Split(line, "%")
-			if len(parts) > 0 {
-				last := strings.TrimSpace(parts[0])
-				words := strings.Split(last, " ")
-				if len(words) > 0 {
-					pstr := words[len(words)-1]
-					percent, err := strconv.Atoi(pstr)
-					if err == nil && percent >= 0 && percent <= 100 {
-						bar.Set(percent)
+	let stdout = child.stdout.take().unwrap();
+	let mut scanner = BufReader::new(stdout).lines();
+
+	let mut pb = Bar::builder()
+	.total(100)
+	.desc(colored("Progress", "blue", false, false))
+	.bar_format("{desc suffix=' '}|{animation}| {spinner} {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s, eta: {remaining human=true})".to_string())
+	.spinner(Spinner::new(
+		&["▁▂▃", "▂▃▄", "▃▄▅", "▄▅▆", "▅▆▇", "▆▇█", "▇█▇", "█▇▆", "▇▆▅", "▆▅▄", "▅▄▃", "▄▃▂", "▃▂▁"],
+		30.0,
+		1.0,
+	))
+	.ncols(20u16)
+	.force_refresh(true)
+	.build()?;
+
+	let mut output = String::new();
+
+	while let Some(line) = scanner.next() {
+		let line = line?;
+		let colored_line = color_output(&line);
+		print!("{}", colored_line);
+		output.push_str(&line);
+		output.push('\n');
+
+		if line.contains('%') {
+			let parts: Vec<&str> = line.split('%').collect();
+			if parts.len() > 1 {
+				let last = parts[0].trim();
+				let words: Vec<&str> = last.split_whitespace().collect();
+				if let Some(pstr) = words.last() {
+					if let Ok(percent) = i32::from_str(pstr) {
+						if percent >= 0 && percent <= 100 {
+							pb.update_to(percent as usize)?;
+						}
 					}
 				}
 			}
 		}
 	}
-	bar.Finish()
-	fmt.Println()
 
-	if err := cmd.Wait(); err != nil {
-		fmt.Println(Colored("Error executing command.", "red", false, false))
-		return output.String(), err
+	let status = child.wait()?;
+	if !status.success() {
+		println!("{}", colored("Error executing command.", "red", false, false));
+		return Err("Command failed".into());
 	}
-	return output.String(), nil
+
+	pb.set_bar_format("{desc suffix=' '}|{animation}| {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s)".to_string())?;
+	pb.clear()?;
+	pb.refresh()?;
+	eprintln!();
+
+	Ok(output)
 }
 
-func HandleInstall(packages []string) {
-	if len(packages) == 0 {
-		fmt.Println(Colored("No packages specified for install.", "red", false, false))
-		return
+fn handle_install(packages: &[String]) {
+	if packages.is_empty() {
+		println!(
+			"{}",
+		   colored("No packages specified for install.", "red", false, false)
+		);
+		return;
 	}
-	cmd := append([]string{"sudo", "apt", "install", "-y"}, packages...)
-	simCmd := append([]string{"sudo", "apt", "install"}, packages...)
-	simCmd = append(simCmd, "-s")
-	simOutput, err := RunCommand(simCmd, true, false)
-	if err != nil {
-		return
-	}
-	parsed := ParseAptSimulate(simOutput)
-	DisplayDnfStyle(parsed, "install")
-	if ConfirmAction() {
-		fmt.Println(Colored("Running transaction", "cyan", false, false))
-		_, _ = RunCommandWithProgress(cmd)
+
+	let mut sim_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "install".to_string()];
+	sim_cmd.extend(packages.iter().cloned());
+	sim_cmd.push("-s".to_string());
+
+	let sim_output = match run_command(&sim_cmd, true, false) {
+		Ok(o) => o,
+		Err(_) => return,
+	};
+
+	let parsed = parse_apt_simulate(&sim_output);
+	display_dnf_style(&parsed, "install");
+
+	if confirm_action() {
+		println!("{}", colored("Running transaction", "cyan", false, false));
+		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "install".to_string(), "-y".to_string()];
+		cmd.extend(packages.iter().cloned());
+		let _ = run_command_with_progress(&cmd);
 	} else {
-		fmt.Println(Colored("Transaction cancelled.", "yellow", false, false))
+		println!(
+			"{}",
+		   colored("Transaction cancelled.", "yellow", false, false)
+		);
 	}
 }
 
-func HandleRemove(packages []string) {
-	if len(packages) == 0 {
-		fmt.Println(Colored("No packages specified for remove.", "red", false, false))
-		return
+fn handle_remove(packages: &[String]) {
+	if packages.is_empty() {
+		println!(
+			"{}",
+		   colored("No packages specified for remove.", "red", false, false)
+		);
+		return;
 	}
-	cmd := append([]string{"sudo", "apt", "remove", "-y"}, packages...)
-	simCmd := append([]string{"sudo", "apt", "remove"}, packages...)
-	simCmd = append(simCmd, "-s")
-	simOutput, err := RunCommand(simCmd, true, false)
-	if err != nil {
-		return
-	}
-	parsed := ParseAptSimulate(simOutput)
-	DisplayDnfStyle(parsed, "remove")
-	if ConfirmAction() {
-		fmt.Println(Colored("Running transaction", "cyan", false, false))
-		_, _ = RunCommandWithProgress(cmd)
+
+	let mut sim_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "remove".to_string()];
+	sim_cmd.extend(packages.iter().cloned());
+	sim_cmd.push("-s".to_string());
+
+	let sim_output = match run_command(&sim_cmd, true, false) {
+		Ok(o) => o,
+		Err(_) => return,
+	};
+
+	let parsed = parse_apt_simulate(&sim_output);
+	display_dnf_style(&parsed, "remove");
+
+	if confirm_action() {
+		println!("{}", colored("Running transaction", "cyan", false, false));
+		let mut cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "remove".to_string(), "-y".to_string()];
+		cmd.extend(packages.iter().cloned());
+		let _ = run_command_with_progress(&cmd);
 	} else {
-		fmt.Println(Colored("Transaction cancelled.", "yellow", false, false))
+		println!(
+			"{}",
+		   colored("Transaction cancelled.", "yellow", false, false)
+		);
 	}
 }
 
-func HandleUpdate() {
-	fmt.Println(Colored("Updating package lists...", "cyan", false, false))
-	updateCmd := []string{"sudo", "apt", "update"}
-	_, _ = RunCommandWithProgress(updateCmd)
+fn handle_update() {
+	println!("{}", colored("Updating package lists...", "cyan", false, false));
+	let update_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "update".to_string()];
+	let _ = run_command_with_progress(&update_cmd);
 
-	upgradeCmd := []string{"sudo", "apt", "upgrade", "-y"}
-	simCmd := []string{"sudo", "apt", "upgrade", "-s"}
-	simOutput, err := RunCommand(simCmd, true, false)
-	if err != nil {
-		return
-	}
-	parsed := ParseAptSimulate(simOutput)
-	DisplayDnfStyle(parsed, "upgrade")
-	if ConfirmAction() {
-		fmt.Println(Colored("Running upgrade", "cyan", false, false))
-		_, _ = RunCommandWithProgress(upgradeCmd)
+	let sim_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "upgrade".to_string(), "-s".to_string()];
+	let sim_output = match run_command(&sim_cmd, true, false) {
+		Ok(o) => o,
+		Err(_) => return,
+	};
+
+	let parsed = parse_apt_simulate(&sim_output);
+	display_dnf_style(&parsed, "upgrade");
+
+	if confirm_action() {
+		println!("{}", colored("Running upgrade", "cyan", false, false));
+		let upgrade_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "upgrade".to_string(), "-y".to_string()];
+		let _ = run_command_with_progress(&upgrade_cmd);
 	} else {
-		fmt.Println(Colored("Upgrade cancelled.", "yellow", false, false))
+		println!("{}", colored("Upgrade cancelled.", "yellow", false, false));
 	}
 }
 
-func HandleClean() {
-	autocleanCmd := []string{"sudo", "apt", "autoclean"}
-	autoremoveCmd := []string{"sudo", "apt", "autoremove", "-y"}
-	simCmd := []string{"sudo", "apt", "autoremove", "-s"}
-	simOutput, err := RunCommand(simCmd, true, false)
-	if err != nil {
-		return
-	}
-	parsed := ParseAptSimulate(simOutput)
-	DisplayDnfStyle(parsed, "clean")
-	if ConfirmAction() {
-		fmt.Println(Colored("Running autoclean", "cyan", false, false))
-		_, _ = RunCommandWithProgress(autocleanCmd)
-		fmt.Println(Colored("Running autoremove", "cyan", false, false))
-		_, _ = RunCommandWithProgress(autoremoveCmd)
+fn handle_clean() {
+	let sim_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoremove".to_string(), "-s".to_string()];
+	let sim_output = match run_command(&sim_cmd, true, false) {
+		Ok(o) => o,
+		Err(_) => return,
+	};
+
+	let parsed = parse_apt_simulate(&sim_output);
+	display_dnf_style(&parsed, "clean");
+
+	if confirm_action() {
+		println!("{}", colored("Running autoclean", "cyan", false, false));
+		let autoclean_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoclean".to_string()];
+		let _ = run_command_with_progress(&autoclean_cmd);
+
+		println!("{}", colored("Running autoremove", "cyan", false, false));
+		let autoremove_cmd: Vec<String> = vec!["sudo".to_string(), "apt".to_string(), "autoremove".to_string(), "-y".to_string()];
+		let _ = run_command_with_progress(&autoremove_cmd);
 	} else {
-		fmt.Println(Colored("Clean cancelled.", "yellow", false, false))
+		println!("{}", colored("Clean cancelled.", "yellow", false, false));
 	}
 }
 
-func PrintHelp() {
-	fmt.Println(Colored("Enhanced APT Frontend in DNF Style with Colors and Progress", "magenta", true, false))
-	fmt.Println("Usage: apt-frontend <command> [options]")
-	fmt.Println("Commands:")
-	fmt.Println("  install <packages...>   Install packages")
-	fmt.Println("  remove <packages...>    Remove packages")
-	fmt.Println("  update                  Update and upgrade packages")
-	fmt.Println("  clean                   Clean up packages")
+fn print_help() {
+	println!(
+		"{}",
+		colored(
+			"Enhanced APT Frontend in DNF Style with Colors and Progress",
+		  "magenta",
+		  true,
+		  false
+		)
+	);
+	println!("Usage: apt-frontend <command> [options]");
+	println!("Commands:");
+	println!(" install <packages...> Install packages");
+	println!(" remove <packages...> Remove packages");
+	println!(" update Update and upgrade packages");
+	println!(" clean Clean up packages");
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		PrintHelp()
-		os.Exit(1)
+fn main() {
+	let args: Vec<String> = env::args().collect();
+	if args.len() < 2 {
+		print_help();
+		return;
 	}
 
-	command := os.Args[1]
-	switch command {
-		case "install":
-			HandleInstall(os.Args[2:])
-		case "remove":
-			HandleRemove(os.Args[2:])
-		case "update":
-			HandleUpdate()
-		case "clean":
-			HandleClean()
-		default:
-			PrintHelp()
-			os.Exit(1)
+	let command = &args[1];
+	match command.as_str() {
+		"install" => handle_install(&args[2..]),
+		"remove" => handle_remove(&args[2..]),
+		"update" => handle_update(),
+		"clean" => handle_clean(),
+		_ => print_help(),
 	}
 }
