@@ -30,7 +30,7 @@ def main
   command = ARGV.shift.downcase
   home_dir = File.expand_path("~")
   apt_frontend_path = File.join(home_dir, ".hackeros", "hpm", "apt-frontend")
-  community_frontend_path = File.join(home_dir, ".hackeros", "hpm", "community-frontend")
+  community_frontend_path = File.join(home_dir, ".hackeros", "hpm", "community")
   tui_path = File.join(home_dir, ".hackeros", "hpm", "tui")
 
   case command
