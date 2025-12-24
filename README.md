@@ -12,3 +12,21 @@ HPM has a community repository; you can create your own repo and submit it (here
 
 ## Graphical package installation
 HPM has the ability to graphically install packages (specifically, in Tui, not through a GUI). You can install packages from apt, flatpak, or snap there.
+
+## Commands:
+- hpm install (package)
+- hpm install (package)
+- hpm clean
+- hpm update
+- hpm refresh
+- hpm fronted install (package)
+- hpm fronted remove (package)
+- hpm fronted clean
+- hpm fronted update
+- hpm community install (package)
+- hpm community remove (package)
+- hpm community clean
+- hpm community update
+- hpm community refresh
+- hpm tui
+- hpm about
