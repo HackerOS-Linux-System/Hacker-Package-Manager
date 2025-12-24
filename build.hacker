@@ -2,8 +2,10 @@
 // shards
 // cargo
 // golang
-// musl-tools
+// g++ 
+// build-essential
 // libcurl4-openssl-dev
+
 
 > cd tui
 > go get hpm
@@ -16,11 +18,7 @@
 > cd ..
 > cd apt-replacement 
 > cargo build --release
-> musl-g++ main.cpp \
-  -static \
-  -lcurl \
-  -lssl -lcrypto -lz \
-  -o hpm
+> g++ -std=c++17 main.cpp -o hpm-apt -lcurl
 > cd ..
 > cd ..
 > cd community
