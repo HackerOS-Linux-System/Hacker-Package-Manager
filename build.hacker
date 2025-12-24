@@ -1,4 +1,3 @@
-// python
 // crystal
 // shards
 // cargo
@@ -13,8 +12,10 @@
 > crystal build src/main.cr --release
 > sudo mv main hpm
 > cd ..
-> cd apt-fronted
+> cd apt-replacement 
 > cargo build --release
+> 
+> cd ..
 > cd ..
 > cd community
 > cd source-code
