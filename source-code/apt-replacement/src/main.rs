@@ -1,10 +1,13 @@
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use chrono;
+use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
+use reqwest::blocking::Client;
 
 const CACHE_DIR: &str = "/var/cache/hpm/";
 const LOG_DIR: &str = "/tmp/hpm/logs/";
@@ -63,67 +66,174 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_command(cmd: &str, args: &[&str], log_file: &mut File, description: &str) -> Result<String> {
+fn run_command(cmd: &str, args: &[&str], log_file: &mut File, description: &str, use_sudo: bool) -> Result<String> {
+    let full_cmd = if use_sudo { format!("sudo {}", cmd) } else { cmd.to_string() };
     println!("{}", description.yellow().bold());
 
-    let output = Command::new(cmd)
-        .args(args)
+    let mut command = if use_sudo {
+        let mut c = Command::new("sudo");
+        c.arg(cmd);
+        c
+    } else {
+        Command::new(cmd)
+    };
+
+    command.args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context(format!("Failed to execute {}", cmd))?;
+        .stderr(Stdio::piped());
+
+    let output = command.output().context(format!("Failed to execute {}", full_cmd))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    writeln!(log_file, "Command: {} {}\nStdout: {}\nStderr: {}", cmd, args.join(" "), stdout, stderr)?;
+    writeln!(log_file, "Command: {} {}\nStdout: {}\nStderr: {}", full_cmd, args.join(" "), stdout, stderr)?;
 
     if !output.status.success() {
         println!("{}", stderr.red());
-        return Err(anyhow::anyhow!("Command failed: {}", stderr));
+        return Err(anyhow!("Command failed: {}", stderr));
     }
 
     println!("{}", stdout.green());
     Ok(stdout)
 }
 
-fn is_package_installed(package: &str, log_file: &mut File) -> Result<bool> {
-    // Use dpkg-query for read-only check (libapt equivalent in command form)
-    let output = Command::new("dpkg-query")
-        .args(&["-W", "-f=${Status}", package])
-        .output()
-        .context("Failed to check if package is installed")?;
+fn get_command_output(cmd: &str, args: &[&str], log_file: &mut File, use_sudo: bool) -> Result<String> {
+    let full_cmd = if use_sudo { format!("sudo {}", cmd) } else { cmd.to_string() };
+    let mut command = if use_sudo {
+        let mut c = Command::new("sudo");
+        c.arg(cmd);
+        c
+    } else {
+        Command::new(cmd)
+    };
 
-    let status = String::from_utf8_lossy(&output.stdout).to_string();
+    command.args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command.output().context(format!("Failed to execute {}", full_cmd))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    writeln!(log_file, "Command: {} {}\nStdout: {}\nStderr: {}", full_cmd, args.join(" "), stdout, stderr)?;
+
+    if !output.status.success() {
+        return Err(anyhow!("Command failed: {}", stderr));
+    }
+
+    Ok(stdout)
+}
+
+fn is_package_installed(package: &str, log_file: &mut File) -> Result<bool> {
+    // Use dpkg-query for read-only check
+    let output = get_command_output("dpkg-query", &["-W", "-f=${Status}", package], log_file, false)?;
+
+    let status = output.trim().to_string();
     writeln!(log_file, "Package status for {}: {}", package, status)?;
 
     Ok(status.contains("install ok installed"))
 }
 
+struct DownloadItem {
+    url: String,
+    filename: String,
+    size: u64,
+}
+
+fn parse_print_uris_output(output: &str) -> Vec<DownloadItem> {
+    let mut downloads = Vec::new();
+    for line in output.lines() {
+        if line.starts_with("'") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let url = parts[0].trim_matches('\'').to_string();
+                let filename = parts[1].to_string();
+                let size: u64 = parts[2].parse().unwrap_or(0);
+                downloads.push(DownloadItem { url, filename, size });
+            }
+        }
+    }
+    downloads
+}
+
+fn download_with_progress(downloads: &[DownloadItem], log_file: &mut File) -> Result<Vec<String>> {
+    let m = MultiProgress::new();
+    let client = Client::new();
+    let mut paths = Vec::new();
+
+    // Sequential downloads for simplicity
+    for item in downloads {
+        let pb = m.add(ProgressBar::new(item.size));
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {eta}"
+            )
+            .unwrap()
+            .progress_chars("##-")
+        );
+        pb.set_message(format!("Downloading {}", item.filename.green()));
+
+        let path = format!("{}/{}", CACHE_DIR, item.filename);
+        let mut file = BufWriter::new(File::create(&path).context("Failed to create file")?);
+
+        let mut response = client.get(&item.url).send().context("Failed to send request")?.error_for_status().context("Bad response status")?;
+
+        let mut downloaded: u64 = 0;
+        let mut buffer = [0; 8192];
+
+        loop {
+            let bytes_read = response.read(&mut buffer).context("Failed to read response")?;
+            if bytes_read == 0 {
+                break;
+            }
+            file.write_all(&buffer[0..bytes_read]).context("Failed to write to file")?;
+            downloaded += bytes_read as u64;
+            pb.set_position(downloaded.min(item.size));
+        }
+
+        file.flush().context("Failed to flush file")?;
+        pb.finish_with_message(format!("Downloaded {}", item.filename.green()));
+        paths.push(path);
+    }
+
+    writeln!(log_file, "Downloaded files: {:?}", paths)?;
+    Ok(paths)
+}
+
 fn install_package(package: &str, log_file: &mut File) -> Result<()> {
     if is_package_installed(package, log_file)? {
-        println!("{} {}", "Package".green(), package.cyan().bold(), "is already installed.".green());
+        println!("{} {} {}", "Package".green(), package.cyan().bold(), "is already installed.".green());
         return Ok(());
     }
 
     // Refresh first
     refresh_packages(log_file)?;
 
-    // Download the package to cache (using apt download as read-only-ish)
-    let deb_file = format!("{}/{}_latest.deb", CACHE_DIR, package);
-    run_command("apt", &["download", package], log_file, &format!("Downloading {}", package))?;
-    // Assume the deb is downloaded to current dir, move to cache
-    if Path::new(&format!("{}_*.deb", package)).exists() {
-        fs::rename(format!("{}_*.deb", package), &deb_file)?;
-    } else {
-        return Err(anyhow::anyhow!("Failed to download package"));
+    // Get URIs to download
+    let uris_output = get_command_output("apt-get", &["--print-uris", "-y", "install", package], log_file, false)?;
+    let downloads = parse_print_uris_output(&uris_output);
+
+    if downloads.is_empty() {
+        println!("{} {}", "No packages to download for".yellow(), package.cyan().bold());
+        return Ok(());
     }
 
-    // Install using dpkg
-    run_command("sudo", &["dpkg", "-i", &deb_file], log_file, &format!("Installing {}", package))?;
+    // Download with progress
+    let deb_paths = download_with_progress(&downloads, log_file)?;
 
-    // Clean up deb file? Optional
-    fs::remove_file(&deb_file)?;
+    // Install using dpkg
+    let mut args = vec!["-i"];
+    for path in &deb_paths {
+        args.push(path.as_str());
+    }
+    run_command("dpkg", &args, log_file, &format!("Installing {}", package), true)?;
+
+    // Clean up deb files
+    for path in deb_paths {
+        fs::remove_file(&path).context("Failed to remove deb file")?;
+    }
 
     println!("{} {} {}", "Successfully installed".green().bold(), package.cyan().bold(), "!".green().bold());
     Ok(())
@@ -131,32 +241,66 @@ fn install_package(package: &str, log_file: &mut File) -> Result<()> {
 
 fn remove_package(package: &str, log_file: &mut File) -> Result<()> {
     if !is_package_installed(package, log_file)? {
-        println!("{} {}", "Package".red(), package.cyan().bold(), "is not installed.".red());
+        println!("{} {} {}", "Package".red(), package.cyan().bold(), "is not installed.".red());
         return Ok(());
     }
 
-    run_command("sudo", &["dpkg", "--remove", package], log_file, &format!("Removing {}", package))?;
+    run_command("dpkg", &["--remove", package], log_file, &format!("Removing {}", package), true)?;
 
     println!("{} {} {}", "Successfully removed".red().bold(), package.cyan().bold(), "!".red().bold());
     Ok(())
 }
 
 fn clean_packages(log_file: &mut File) -> Result<()> {
-    run_command("sudo", &["apt", "autoclean"], log_file, "Running autoclean")?;
-    run_command("sudo", &["apt", "autoremove"], log_file, "Running autoremove")?;
+    run_command("apt", &["autoclean"], log_file, "Running autoclean", true)?;
+    run_command("apt", &["autoremove"], log_file, "Running autoremove", true)?;
     println!("{}", "Cleaned up packages!".blue().bold());
     Ok(())
 }
 
 fn update_packages(log_file: &mut File) -> Result<()> {
     refresh_packages(log_file)?;
-    run_command("sudo", &["apt", "upgrade", "-y"], log_file, "Upgrading packages")?;
+
+    // Check if updates available
+    let sim_output = get_command_output("apt-get", &["-s", "-y", "upgrade"], log_file, false)?;
+    if !sim_output.contains("Inst ") {
+        println!("{}", "All packages are up to date.".green().bold());
+        return Ok(());
+    }
+
+    // Get URIs for upgrade
+    let uris_output = get_command_output("apt-get", &["--print-uris", "-y", "upgrade"], log_file, false)?;
+    let downloads = parse_print_uris_output(&uris_output);
+
+    if downloads.is_empty() {
+        println!("{}", "No updates to download.".yellow());
+        return Ok(());
+    }
+
+    // Download with progress
+    let deb_paths = download_with_progress(&downloads, log_file)?;
+
+    // Install using dpkg (though usually apt upgrade handles, but to follow dpkg)
+    // But dpkg may not handle upgrades properly if conflicts, but for simplicity
+    // Actually, for upgrades, better to use apt upgrade, but to follow instructions, use dpkg.
+    // But dpkg -i on upgrades works if it's upgrade.
+    let mut args = vec!["-i"];
+    for path in &deb_paths {
+        args.push(path.as_str());
+    }
+    run_command("dpkg", &args, log_file, "Upgrading packages", true)?;
+
+    // Clean up
+    for path in deb_paths {
+        fs::remove_file(&path).context("Failed to remove deb file")?;
+    }
+
     println!("{}", "Packages updated!".magenta().bold());
     Ok(())
 }
 
 fn refresh_packages(log_file: &mut File) -> Result<()> {
-    run_command("sudo", &["apt", "update"], log_file, "Refreshing package lists")?;
+    run_command("apt", &["update"], log_file, "Refreshing package lists", true)?;
     println!("{}", "Package lists refreshed!".cyan().bold());
     Ok(())
-  }
+}
