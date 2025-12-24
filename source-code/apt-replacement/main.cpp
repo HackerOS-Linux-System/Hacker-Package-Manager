@@ -2,24 +2,26 @@
 #include <string>
 #include <fstream>
 #include <vector>
-#include <set>
-#include <queue>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <ctime>
 #include <sstream>
 #include <iomanip>
 #include <cstdlib>
 #include <unistd.h>
-#include <apt-pkg/cachefile.h>
-#include <apt-pkg/pkgcache.h>
-#include <apt-pkg/init.h>
-#include <apt-pkg/progress.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <ctime>
+#include <curl/curl.h>
+#include <sys/wait.h>
 
 using namespace std;
 
 const string CACHE_DIR = "/var/cache/hpm/";
 const string LOG_DIR = "/tmp/hpm/logs/";
+
+struct DownloadItem {
+    string url;
+    string filename;
+    size_t size;
+};
 
 void create_dir(const string& dir) {
     mkdir(dir.c_str(), 0755);
@@ -37,13 +39,14 @@ string get_current_time() {
     return ss.str();
 }
 
-pair<int, string> run_command(const string& cmd, ofstream& log, const string& description, bool print_output = true) {
+pair<int, string> run_command(const string& cmd, ofstream& log, const string& description, bool print_output = true, bool use_sudo = false) {
+    string full_cmd = use_sudo ? "sudo " + cmd : cmd;
     if (!description.empty()) {
         cout << "\033[1;33m" << description << "\033[0m" << endl;
     }
-    FILE* pipe = popen(cmd.c_str(), "r");
+    FILE* pipe = popen(full_cmd.c_str(), "r");
     if (!pipe) {
-        log << "popen failed for: " << cmd << endl;
+        log << "popen failed for: " << full_cmd << endl;
         return {1, "popen failed"};
     }
     string result;
@@ -54,8 +57,8 @@ pair<int, string> run_command(const string& cmd, ofstream& log, const string& de
         }
     }
     int status = pclose(pipe);
-    int exit_code = status / 256;
-    log << "Command: " << cmd << "\nStdout/Stderr: " << result << "\nExit code: " << exit_code << endl;
+    int exit_code = WEXITSTATUS(status);
+    log << "Command: " << full_cmd << "\nStdout/Stderr: " << result << "\nExit code: " << exit_code << endl;
     if (print_output) {
         string color = (exit_code == 0) ? "\033[1;32m" : "\033[1;31m";
         cout << color << result << "\033[0m" << endl;
@@ -63,8 +66,108 @@ pair<int, string> run_command(const string& cmd, ofstream& log, const string& de
     return {exit_code, result};
 }
 
-bool is_package_installed(const pkgCache::PkgIterator& Pkg) {
-    return !Pkg.CurrentVer().end();
+bool is_package_installed(const string& package, ofstream& log) {
+    auto [status, output] = run_command("dpkg-query -W -f='${Status}' " + package, log, "", false, false);
+    return status == 0 && output.find("install ok installed") != string::npos;
+}
+
+vector<DownloadItem> parse_print_uris(const string& output) {
+    vector<DownloadItem> downloads;
+    stringstream ss(output);
+    string line;
+    while (getline(ss, line)) {
+        if (line.empty() || line[0] != '\'') continue;
+        stringstream ls(line);
+        string url, filename;
+        size_t size = 0;
+        ls >> url >> filename >> size;
+        url = url.substr(1, url.size() - 2);  // remove quotes
+        downloads.push_back({url, filename, size});
+    }
+    return downloads;
+}
+
+struct ProgressData {
+    double last_percent;
+    time_t start_time;
+    string filename;
+};
+
+int progress_callback(void *p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    ProgressData *prog = static_cast<ProgressData *>(p);
+    if (dltotal <= 0) return 0;
+    double percent = (double)dlnow / dltotal * 100.0;
+    if (percent - prog->last_percent < 1.0) return 0;  // update every 1%
+
+    time_t now = time(NULL);
+    double elapsed = difftime(now, prog->start_time);
+    if (elapsed == 0) elapsed = 1; // avoid division by zero
+    double speed = dlnow / elapsed;
+    double eta = (dltotal - dlnow) / speed;
+
+    cout << "\r\033[1;36mDownloading " << prog->filename << " [";
+    int bar_width = 50;
+    int pos = static_cast<int>(percent / 100.0 * bar_width);
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < pos) cout << "=";
+        else if (i == pos) cout << ">";
+        else cout << " ";
+    }
+    cout << "] " << fixed << setprecision(1) << percent << "% " 
+         << (speed / 1024) << " KB/s eta " << eta << "s\033[0m" << flush;
+    prog->last_percent = percent;
+    return 0;
+}
+
+int download_file(const string& url, const string& path, ofstream& log) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    FILE *fp = fopen(path.c_str(), "wb");
+    if (!fp) {
+        curl_easy_cleanup(curl);
+        return 1;
+    }
+
+    ProgressData prog = {0.0, time(NULL), path.substr(path.find_last_of('/') + 1)};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &prog);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    cout << endl;
+
+    fclose(fp);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        log << "Download failed for " << url << ": " << curl_easy_strerror(res) << endl;
+        return 1;
+    }
+    return 0;
+}
+
+vector<string> download_packages(const vector<DownloadItem>& downloads, ofstream& log) {
+    vector<string> paths;
+    if (chdir(CACHE_DIR.c_str()) != 0) {
+        log << "Failed to change to cache dir" << endl;
+        return paths;
+    }
+    for (const auto& item : downloads) {
+        string path = CACHE_DIR + item.filename;
+        cout << "\033[1;33mStarting download: " << item.filename << "\033[0m" << endl;
+        if (download_file(item.url, item.filename, log) == 0) {
+            paths.push_back(path);
+        } else {
+            cout << "\033[1;31mDownload failed for " << item.filename << "\033[0m" << endl;
+        }
+    }
+    return paths;
 }
 
 int main(int argc, char* argv[]) {
@@ -74,6 +177,7 @@ int main(int argc, char* argv[]) {
     }
 
     string command = argv[1];
+    string package = (argc > 2) ? argv[2] : "";
 
     create_dir(CACHE_DIR);
     create_dir(LOG_DIR);
@@ -87,123 +191,37 @@ int main(int argc, char* argv[]) {
 
     log << "Starting hpm command: " << command << endl;
 
-    string package;
-    if (argc > 2) package = argv[2];
-
     if (command == "install") {
         if (package.empty()) {
             cout << "\033[1;31mNo package specified\033[0m" << endl;
             return 1;
         }
-
-        // Refresh package lists
-        run_command("sudo apt update", log, "Refreshing package lists");
-
-        // Initialize APT
-        if (!pkgInitConfig(*_system)) {
-            log << "pkgInitConfig failed" << endl;
-            cout << "\033[1;31mInitialization failed\033[0m" << endl;
-            return 1;
-        }
-        if (!pkgInitSystem(*_system, _system)) {
-            log << "pkgInitSystem failed" << endl;
-            cout << "\033[1;31mInitialization failed\033[0m" << endl;
-            return 1;
-        }
-
-        OpTextProgress Prog;
-        pkgCacheFile cachefile;
-        if (!cachefile.Open(&Prog, false)) {
-            log << "cachefile.Open failed" << endl;
-            cout << "\033[1;31mFailed to open package cache\033[0m" << endl;
-            return 1;
-        }
-
-        pkgDepCache depcache(cachefile);
-        depcache.Init(&Prog);
-
-        pkgCache *Cache = cachefile.GetPkgCache();
-
-        pkgCache::PkgIterator targetPkg = Cache->FindPkg(package);
-        if (targetPkg.end()) {
-            cout << "\033[1;31mPackage " << package << " not found\033[0m" << endl;
-            return 1;
-        }
-
-        if (is_package_installed(targetPkg)) {
+        if (is_package_installed(package, log)) {
             cout << "\033[1;32mPackage " << package << " is already installed.\033[0m" << endl;
             return 0;
         }
 
-        // Collect all dependencies recursively (simple solver - to be replaced with Rust)
-        set<string> all_packages;
-        queue<string> to_process;
-        to_process.push(package);
+        run_command("apt update", log, "Refreshing package lists", true, true);
 
-        while (!to_process.empty()) {
-            string p = to_process.front();
-            to_process.pop();
+        auto [ustatus, uris] = run_command("apt-get --print-uris -y install " + package, log, "", false, false);
+        if (ustatus != 0) return 1;
 
-            if (all_packages.count(p)) continue;
-            all_packages.insert(p);
-
-            pkgCache::PkgIterator Pkg = Cache->FindPkg(p);
-            if (Pkg.end()) continue;
-
-            pkgCache::VerIterator Ver = depcache.GetCandidateVer(Pkg);
-            if (Ver.end()) continue;
-
-            for (pkgCache::DepIterator Dep = Ver.DependsList(); !Dep.end(); ++Dep) {
-                if (Dep->Type == pkgCache::Dep::Depends || Dep->Type == pkgCache::Dep::PreDepends) {
-                    string target = Dep.TargetPkg().Name();
-                    to_process.push(target);
-                }
-            }
-        }
-
-        // Filter not installed
-        vector<string> to_install;
-        vector<string> deb_files;
-        for (const auto& p : all_packages) {
-            pkgCache::PkgIterator Pkg = Cache->FindPkg(p);
-            if (!is_package_installed(Pkg)) {
-                pkgCache::VerIterator Ver = depcache.GetCandidateVer(Pkg);
-                if (!Ver.end()) {
-                    string arch = Ver.Arch();
-                    string ver_str = Ver.VerStr();
-                    string deb = p + "_" + ver_str + "_" + arch + ".deb";
-                    to_install.push_back(p);
-                    deb_files.push_back(deb);
-                }
-            }
-        }
-
-        if (to_install.empty()) {
-            cout << "\033[1;32mNothing to install\033[0m" << endl;
+        auto downloads = parse_print_uris(uris);
+        if (downloads.empty()) {
+            cout << "\033[1;33mNo packages to download\033[0m" << endl;
             return 0;
         }
 
-        // Change to cache dir
-        if (chdir(CACHE_DIR.c_str()) != 0) {
-            log << "chdir failed" << endl;
-            cout << "\033[1;31mFailed to change directory to cache\033[0m" << endl;
-            return 1;
-        }
+        auto deb_paths = download_packages(downloads, log);
 
-        // Download
-        for (const auto& p : to_install) {
-            run_command("apt download " + p, log, "Downloading " + p);
+        string install_cmd = "dpkg -i";
+        for (const auto& p : deb_paths) {
+            install_cmd += " " + p;
         }
+        run_command(install_cmd, log, "Installing packages", true, true);
 
-        // Install all
-        string install_cmd = "sudo dpkg -i";
-        for (const auto& f : deb_files) {
-            install_cmd += " " + f;
-        }
-        auto [istatus, iout] = run_command(install_cmd, log, "Installing packages");
-
-        if (istatus != 0) {
-            return 1;
+        for (const auto& p : deb_paths) {
+            remove(p.c_str());
         }
 
         cout << "\033[1;32mSuccessfully installed " << package << "!\033[0m" << endl;
@@ -213,58 +231,55 @@ int main(int argc, char* argv[]) {
             cout << "\033[1;31mNo package specified\033[0m" << endl;
             return 1;
         }
-
-        // Initialize APT for check
-        if (!pkgInitConfig(*_system)) {
-            log << "pkgInitConfig failed" << endl;
-            return 1;
-        }
-        if (!pkgInitSystem(*_system, _system)) {
-            log << "pkgInitSystem failed" << endl;
-            return 1;
-        }
-
-        OpTextProgress Prog;
-        pkgCacheFile cachefile;
-        if (!cachefile.Open(&Prog, false)) {
-            log << "cachefile.Open failed" << endl;
-            return 1;
-        }
-
-        pkgDepCache depcache(cachefile);
-        depcache.Init(&Prog);
-
-        pkgCache *Cache = cachefile.GetPkgCache();
-
-        pkgCache::PkgIterator Pkg = Cache->FindPkg(package);
-        if (Pkg.end()) {
-            cout << "\033[1;31mPackage " << package << " not found\033[0m" << endl;
-            return 1;
-        }
-
-        if (!is_package_installed(Pkg)) {
+        if (!is_package_installed(package, log)) {
             cout << "\033[1;31mPackage " << package << " is not installed.\033[0m" << endl;
             return 0;
         }
 
-        run_command("sudo dpkg --remove " + package, log, "Removing " + package);
+        run_command("dpkg --remove " + package, log, "Removing " + package, true, true);
 
         cout << "\033[1;31mSuccessfully removed " << package << "!\033[0m" << endl;
 
     } else if (command == "clean") {
-        run_command("sudo apt autoclean", log, "Running autoclean");
-        run_command("sudo apt autoremove", log, "Running autoremove");
-        // Clean hpm cache
-        run_command("rm -f " + CACHE_DIR + "*.deb", log, "Cleaning hpm cache", false);
+        run_command("apt autoclean", log, "Running autoclean", true, true);
+        run_command("apt autoremove", log, "Running autoremove", true, true);
+        run_command("rm -f /var/cache/hpm/*.deb", log, "", false, false);
         cout << "\033[1;34mCleaned up packages!\033[0m" << endl;
 
     } else if (command == "update") {
-        run_command("sudo apt update", log, "Refreshing package lists");
-        run_command("sudo apt upgrade -y", log, "Upgrading packages");
+        run_command("apt update", log, "Refreshing package lists", true, true);
+
+        auto [sstatus, sim] = run_command("apt-get -s upgrade", log, "", false, false);
+        if (sim.find("Inst ") == string::npos) {
+            cout << "\033[1;32mAll packages are up to date.\033[0m" << endl;
+            return 0;
+        }
+
+        auto [ustatus, uris] = run_command("apt-get --print-uris -y upgrade", log, "", false, false);
+        if (ustatus != 0) return 1;
+
+        auto downloads = parse_print_uris(uris);
+        if (downloads.empty()) {
+            cout << "\033[1;33mNo updates available\033[0m" << endl;
+            return 0;
+        }
+
+        auto deb_paths = download_packages(downloads, log);
+
+        string install_cmd = "dpkg -i";
+        for (const auto& p : deb_paths) {
+            install_cmd += " " + p;
+        }
+        run_command(install_cmd, log, "Upgrading packages", true, true);
+
+        for (const auto& p : deb_paths) {
+            remove(p.c_str());
+        }
+
         cout << "\033[1;35mPackages updated!\033[0m" << endl;
 
     } else if (command == "refresh") {
-        run_command("sudo apt update", log, "Refreshing package lists");
+        run_command("apt update", log, "Refreshing package lists", true, true);
         cout << "\033[1;36mPackage lists refreshed!\033[0m" << endl;
 
     } else {
