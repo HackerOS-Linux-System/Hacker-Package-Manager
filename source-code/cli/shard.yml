@@ -1,9 +1,0 @@
-name: hpm
-version: 0.4
-
-authors:
-  - HackerOS Team <hackeros068@gmail.com>
-
-crystal: 1.0.0
-
-license: GPL-3.0 license
