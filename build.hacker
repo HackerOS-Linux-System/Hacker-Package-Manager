@@ -1,27 +1,6 @@
 // crystal
-// shards
-// cargo
-// golang
-// g++ 
-// build-essential
-// libcurl4-openssl-dev
+// zig
 
-
-> cd tui
-> go get hpm
-> go build
-> sudo mv hpm tui
-> cd ..
-> cd cli
-> crystal build src/main.cr --release
-> sudo mv main hpm
-> cd ..
-> cd apt-replacement 
-> cargo build --release
-> g++ -std=c++17 main.cpp -o hpm-apt -lcurl
-> cd ..
-> cd ..
-> cd community
 > cd source-code
-> go get community
-> go build
+>>> cd cli && crystal build src/main.cr --release
+>>> cd backend && zig build
