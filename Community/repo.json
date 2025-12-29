@@ -1,1 +1,12 @@
-
+{
+  "vira-lang": {
+    "version": "0.3",
+    "url": "",
+    "description": "Programing Language"
+  },
+  "pakiet2": {
+    "version": "2.5",
+    "url": "https://example.com/pakiet2.tar.gz",
+    "description": "Inny opis"
+  }
+}
