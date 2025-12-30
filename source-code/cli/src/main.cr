@@ -5,7 +5,7 @@ require "process"
 require "digest/sha256"
 
 module HPM
-  VERSION = "0.3"
+  VERSION = "0.5"
   STORE_PATH = "/usr/lib/HackerOS/hpm/store/"
   BACKEND_PATH = "#{ENV["HOME"]}/.hackeros/hpm/bin/backend"
   REPO_JSON_URL = "https://raw.githubusercontent.com/HackerOS-Linux-System/Hacker-Package-Manager/main/Community/repo.json"
