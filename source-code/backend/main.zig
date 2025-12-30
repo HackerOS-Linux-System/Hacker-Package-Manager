@@ -44,7 +44,7 @@ const State = struct {
             allocator.free(entry.value_ptr.version);
             allocator.free(entry.value_ptr.checksum);
         }
-        self.packages.deinit();
+        self.packages.deinit(allocator);
     }
 };
 const ErrorCode = enum(i32) {
@@ -90,10 +90,10 @@ pub fn main() !void {
     }
 }
 fn stringifyAlloc(allocator: Allocator, value: anytype, options: anytype) ![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    try json.stringify(value, options, buf.writer());
-    return try buf.toOwnedSlice();
+    var out = std.io.Writer.Allocating.init(allocator);
+    errdefer out.deinit();
+    try std.json.Stringify.value(value, options, &out.writer);
+    return try out.toOwnedSlice();
 }
 fn outputError(allocator: Allocator, code: ErrorCode, msg: []const u8) !void {
     const payload = .{ .err = .{ .code = @intFromEnum(code), .message = msg } };
@@ -161,7 +161,7 @@ fn remove(allocator: Allocator, package: []const u8, path: []const u8) !void {
     // Remove from state
     var state = try loadState(allocator);
     defer state.deinit(allocator);
-    if (state.packages.fetchRemove(package)) |kv| {
+    if (state.packages.fetchRemove(allocator, package)) |kv| {
         allocator.free(kv.key);
         allocator.free(kv.value.version);
         allocator.free(kv.value.checksum);
@@ -196,9 +196,9 @@ fn verify(allocator: Allocator, path: []const u8, checksum: []const u8) !void {
 }
 fn setupSandbox(allocator: Allocator, package: []const u8, path: []const u8, manifest: *const Manifest) !void {
     _ = package; // unused
-    var args_list = std.ArrayList([]const u8).init(allocator);
-    defer args_list.deinit();
-    try args_list.appendSlice(&[_][]const u8{
+    var args_list = try std.ArrayList([]const u8).initCapacity(allocator, 20);
+    defer args_list.deinit(allocator);
+    try args_list.appendSlice(allocator, &[_][]const u8{
         "bwrap",
         "--ro-bind", "/usr", "/usr",
         "--ro-bind", "/lib", "/lib",
@@ -210,16 +210,16 @@ fn setupSandbox(allocator: Allocator, package: []const u8, path: []const u8, man
         "--unshare-all",
     });
     if (!manifest.sandbox.network) {
-        try args_list.append("--unshare-net");
+        try args_list.append(allocator, "--unshare-net");
     } else {
-        try args_list.append("--share-net");
+        try args_list.append(allocator, "--share-net");
     }
     if (manifest.sandbox.filesystem) |fs_paths| {
         for (fs_paths) |fs_path| {
-            try args_list.appendSlice(&[_][]const u8{"--bind", fs_path, fs_path});
+            try args_list.appendSlice(allocator, &[_][]const u8{"--bind", fs_path, fs_path});
         }
     }
-    try args_list.appendSlice(&[_][]const u8{
+    try args_list.appendSlice(allocator, &[_][]const u8{
         "--", "sh", "-c", "echo Isolated install complete" // Replace with actual
     });
     const child = try std.ChildProcess.run(.{
@@ -240,7 +240,7 @@ const STATE_PATH = "/var/lib/hpm/state.json";
 fn loadState(allocator: Allocator) !State {
     const file = fs.cwd().openFile(STATE_PATH, .{}) catch |err| {
         if (err == error.FileNotFound) {
-            return State{ .packages = std.StringHashMap(PackageInfo).init(allocator) };
+            return State{ .packages = .{} };
         }
         return err;
     };
@@ -253,17 +253,18 @@ fn loadState(allocator: Allocator) !State {
 fn saveState(state: State) !void {
     const file = try fs.cwd().createFile(STATE_PATH, .{});
     defer file.close();
-    try json.stringify(state, .{}, file.writer());
+    try std.json.Stringify.value(state, .{}, &file.writer());
 }
 fn updateState(allocator: Allocator, package: []const u8, version: []const u8, checksum: []const u8) !void {
     var state = try loadState(allocator);
     defer state.deinit(allocator);
     try state.packages.put(
+        allocator,
         try allocator.dupe(u8, package),
-        .{
-            .version = try allocator.dupe(u8, version),
-            .checksum = try allocator.dupe(u8, checksum),
-        },
+                           .{
+                               .version = try allocator.dupe(u8, version),
+                           .checksum = try allocator.dupe(u8, checksum),
+                           },
     );
     try saveState(state);
 }
