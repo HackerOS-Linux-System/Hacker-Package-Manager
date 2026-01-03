@@ -1,53 +1,66 @@
-const std = @import("std");
-const os = std.os;
-const fs = std.fs;
-const process = std.process;
-const json = std.json;
-const mem = std.mem;
-const Allocator = std.mem.Allocator;
-const Manifest = struct {
-    name: []const u8,
-    version: []const u8,
-    deps: ?[]const []const u8 = null,
-    bins: ?[]const []const u8 = null,
+package main
+
+import "core:fmt"
+import "core:os"
+import "core:mem"
+import "core:strings"
+import "core:encoding/json"
+import "core:crypto/sha2"
+import "core:sys/linux"
+
+Manifest :: struct {
+    name: string,
+    version: string,
+    deps: []string,
+    bins: []string,
     sandbox: struct {
-        network: bool = false,
-        filesystem: ?[]const []const u8 = null,
-    } = .{},
-    pub fn deinit(self: Manifest, allocator: Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.version);
-        if (self.deps) |deps| {
-            for (deps) |dep| allocator.free(dep);
-            allocator.free(deps);
+        network: bool,
+        filesystem: []string,
+    },
+}
+
+deinit_manifest :: proc(self: ^Manifest, allocator: mem.Allocator) {
+    delete(self.name, allocator)
+    delete(self.version, allocator)
+    if self.deps != nil {
+        for dep in self.deps {
+            delete(dep, allocator)
         }
-        if (self.bins) |bins| {
-            for (bins) |bin| allocator.free(bin);
-            allocator.free(bins);
-        }
-        if (self.sandbox.filesystem) |fs_paths| {
-            for (fs_paths) |path| allocator.free(path);
-            allocator.free(fs_paths);
-        }
+        delete(self.deps, allocator)
     }
-};
-const PackageInfo = struct {
-    version: []const u8,
-    checksum: []const u8,
-};
-const State = struct {
-    packages: std.StringHashMap(PackageInfo),
-    pub fn deinit(self: *State, allocator: Allocator) void {
-        var it = self.packages.iterator();
-        while (it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.version);
-            allocator.free(entry.value_ptr.checksum);
+    if self.bins != nil {
+        for bin in self.bins {
+            delete(bin, allocator)
         }
-        self.packages.deinit(allocator);
+        delete(self.bins, allocator)
     }
-};
-const ErrorCode = enum(i32) {
+    if self.sandbox.filesystem != nil {
+        for path in self.sandbox.filesystem {
+            delete(path, allocator)
+        }
+        delete(self.sandbox.filesystem, allocator)
+    }
+}
+
+PackageInfo :: struct {
+    version: string,
+    checksum: string,
+}
+
+State :: struct {
+    packages: map[string]PackageInfo,
+}
+
+deinit_state :: proc(self: ^State, allocator: mem.Allocator) {
+    for key, value in self.packages {
+        delete(key, allocator)
+        delete(value.version, allocator)
+        delete(value.checksum, allocator)
+    }
+    delete(self.packages)
+}
+
+ErrorCode :: enum i32 {
     Success = 0,
     InvalidArgs = 1,
     PackageNotFound = 2,
@@ -56,215 +69,324 @@ const ErrorCode = enum(i32) {
     RemoveFailed = 5,
     VerificationFailed = 6,
     UnknownCommand = 99,
-};
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    const args = try process.argsAlloc(allocator);
-    defer process.argsFree(allocator, args);
-    if (args.len < 3) {
-        try outputError(allocator, .InvalidArgs, "Usage: backend [install|remove|verify] <package> <path> [checksum]");
-        return;
+}
+
+main :: proc() {
+    arena: mem.Arena
+    backing := make([]u8, 8 * mem.Megabyte)
+    mem.arena_init(&arena, backing)
+    defer delete(backing)
+    allocator := mem.arena_allocator(&arena)
+    context.allocator = allocator
+
+    args := os.args[1:]
+    if len(args) < 3 {
+        output_error(allocator, .InvalidArgs, "Usage: backend [install|remove|verify] <package> <path> [checksum]")
+        return
     }
-    const command = args[1];
-    const package = args[2];
-    const path = args[3];
-    const checksum = if (args.len > 4) args[4] else null;
-    if (mem.eql(u8, command, "install")) {
-        try install(allocator, package, path, checksum);
-    } else if (mem.eql(u8, command, "remove")) {
-        try remove(allocator, package, path);
-    } else if (mem.eql(u8, command, "verify")) {
-        const chk = checksum orelse {
-            try outputError(allocator, .InvalidArgs, "Checksum required for verify");
-            return;
-        };
-        try verify(allocator, path, chk);
-        const payload = .{ .success = true };
-        const output = try stringifyAlloc(allocator, payload, .{});
-        defer allocator.free(output);
-        try std.io.getStdOut().writeAll(output);
-    } else {
-        try outputError(allocator, .UnknownCommand, "Unknown command");
+    command := args[0]
+    package_name := args[1]
+    path := args[2]
+    checksum: Maybe(string) = nil
+    if len(args) > 3 {
+        checksum = args[3]
     }
-}
-fn stringifyAlloc(allocator: Allocator, value: anytype, options: anytype) ![]u8 {
-    var out = std.io.Writer.Allocating.init(allocator);
-    errdefer out.deinit();
-    try std.json.Stringify.value(value, options, &out.writer);
-    return try out.toOwnedSlice();
-}
-fn outputError(allocator: Allocator, code: ErrorCode, msg: []const u8) !void {
-    const payload = .{ .err = .{ .code = @intFromEnum(code), .message = msg } };
-    const output = try stringifyAlloc(allocator, payload, .{});
-    defer allocator.free(output);
-    try std.io.getStdErr().writeAll(output);
-    std.process.exit(@intFromEnum(code));
-}
-fn loadManifest(allocator: Allocator, path: []const u8) !Manifest {
-    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{path});
-    defer allocator.free(manifest_path);
-    const file = try fs.cwd().openFile(manifest_path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(content);
-    const parsed = try json.parseFromSlice(Manifest, allocator, content, .{ .allocate = .alloc_always });
-    return parsed.value;
-}
-fn install(allocator: Allocator, package: []const u8, path: []const u8, checksum: ?[]const u8) !void {
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
-    defer allocator.free(tmp_path);
-    fs.cwd().makeDir(tmp_path) catch |err| if (err != error.PathAlreadyExists) return err;
-    // Simulate install in tmp
-    // In real: extract to tmp, but since CLI does extract, assume it's already in tmp_path
-    // Load manifest
-    const manifest = try loadManifest(allocator, tmp_path);
-    defer manifest.deinit(allocator);
-    // Handle deps recursively
-    if (manifest.deps) |deps| {
-        for (deps) |dep| {
-            // TODO: Full DAG, cycle detection
-            // For now: recursive install (assume no cycles)
-            // In CLI: handle this, but for backend, assume deps installed
-            std.debug.print("Installing dep: {s}\n", .{dep});
+
+    switch command {
+    case "install":
+        install(allocator, package_name, path, checksum)
+    case "remove":
+        remove(allocator, package_name, path)
+    case "verify":
+        if checksum == nil {
+            output_error(allocator, .InvalidArgs, "Checksum required for verify")
+            return
         }
-    }
-    // Setup sandbox and run install script if any
-    try setupSandbox(allocator, package, tmp_path, &manifest);
-    // Verify checksum if provided (archive checksum, assume file in path)
-    if (checksum) |chk| {
-        try verify(allocator, tmp_path, chk);
-    }
-    // On success, rename
-    try fs.cwd().rename(tmp_path, path);
-    // Update state
-    try updateState(allocator, package, manifest.version, checksum orelse "none");
-    const payload = .{ .success = true, .package = package };
-    const output = try stringifyAlloc(allocator, payload, .{});
-    defer allocator.free(output);
-    try std.io.getStdOut().writeAll(output);
-}
-fn remove(allocator: Allocator, package: []const u8, path: []const u8) !void {
-    // Load manifest for cleanup
-    const manifest = try loadManifest(allocator, path);
-    defer manifest.deinit(allocator);
-    // Cleanup bins, etc.
-    if (manifest.bins) |bins| {
-        for (bins) |bin| {
-            const bin_path = try std.fmt.allocPrint(allocator, "/usr/bin/{s}", .{bin});
-            defer allocator.free(bin_path);
-            fs.cwd().deleteFile(bin_path) catch {};
+        verify(allocator, path, checksum.?)
+        payload := struct { success: bool }{true}
+        output, merr := json.marshal(payload)
+        if merr != nil {
+            panic("JSON marshal failed")
         }
-    }
-    try fs.cwd().deleteTree(path);
-    // Remove from state
-    var state = try loadState(allocator);
-    defer state.deinit(allocator);
-    if (state.packages.fetchRemove(allocator, package)) |kv| {
-        allocator.free(kv.key);
-        allocator.free(kv.value.version);
-        allocator.free(kv.value.checksum);
-    }
-    try saveState(state);
-    const payload = .{ .success = true, .package = package };
-    const output = try stringifyAlloc(allocator, payload, .{});
-    defer allocator.free(output);
-    try std.io.getStdOut().writeAll(output);
-}
-fn verify(allocator: Allocator, path: []const u8, checksum: []const u8) !void {
-    // Assume verifying archive or dir hash
-    // For simplicity, hash a file in path, say manifest.json
-    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{path});
-    defer allocator.free(manifest_path);
-    const file = try fs.cwd().openFile(manifest_path, .{});
-    defer file.close();
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const bytes_read = try file.read(&buf);
-        if (bytes_read == 0) break;
-        hasher.update(buf[0..bytes_read]);
-    }
-    var hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-    hasher.final(&hash);
-    const computed = try std.fmt.allocPrint(allocator, "{x}", .{std.fmt.fmtSliceHexLower(&hash)});
-    defer allocator.free(computed);
-    if (!mem.eql(u8, computed, checksum)) {
-        try outputError(allocator, .VerificationFailed, "Checksum mismatch");
+        defer delete(output)
+        os.write(os.stdout, output)
+    case:
+        output_error(allocator, .UnknownCommand, "Unknown command")
     }
 }
-fn setupSandbox(allocator: Allocator, package: []const u8, path: []const u8, manifest: *const Manifest) !void {
-    _ = package; // unused
-    var args_list = try std.ArrayList([]const u8).initCapacity(allocator, 20);
-    defer args_list.deinit(allocator);
-    try args_list.appendSlice(allocator, &[_][]const u8{
-        "bwrap",
-        "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/lib", "/lib",
-        "--ro-bind", "/lib64", "/lib64",
-        "--ro-bind", "/bin", "/bin",
-        "--ro-bind", "/etc", "/etc",
-        "--bind", path, "/app",
-        "--chdir", "/app",
-        "--unshare-all",
-    });
-    if (!manifest.sandbox.network) {
-        try args_list.append(allocator, "--unshare-net");
-    } else {
-        try args_list.append(allocator, "--share-net");
-    }
-    if (manifest.sandbox.filesystem) |fs_paths| {
-        for (fs_paths) |fs_path| {
-            try args_list.appendSlice(allocator, &[_][]const u8{"--bind", fs_path, fs_path});
-        }
-    }
-    try args_list.appendSlice(allocator, &[_][]const u8{
-        "--", "sh", "-c", "echo Isolated install complete" // Replace with actual
-    });
-    const child = try std.ChildProcess.run(.{
-        .allocator = allocator,
-        .argv = args_list.items,
-    });
-    switch (child.term) {
-        .Exited => |code| if (code != 0) {
-            try outputError(allocator, .InstallFailed, "Sandbox failed");
+
+output_error :: proc(allocator: mem.Allocator, code: ErrorCode, msg: string) {
+    payload := struct {
+        err: struct {
+            code: i32,
+            message: string,
         },
-        else => try outputError(allocator, .InstallFailed, "Sandbox failed"),
+    }{{code = i32(code), message = msg}}
+    output, merr := json.marshal(payload)
+    if merr != nil {
+        panic("JSON marshal failed")
+    }
+    os.write(os.stderr, output)
+    delete(output)
+    os.exit(int(i32(code)))
+}
+
+load_manifest :: proc(allocator: mem.Allocator, path: string) -> Manifest {
+    manifest_path := fmt.aprintf("{}/manifest.json", path)
+    defer delete(manifest_path)
+    data, ok := os.read_entire_file(manifest_path)
+    if !ok {
+        panic("Failed to read manifest")
+    }
+    defer delete(data)
+    manifest: Manifest
+    err := json.unmarshal(data, &manifest, {allocator = allocator})
+    if err != nil {
+        panic("Failed to parse manifest")
+    }
+    return manifest
+}
+
+install :: proc(allocator: mem.Allocator, package_name: string, path: string, checksum: Maybe(string)) {
+    tmp_path := fmt.aprintf("{}.tmp", path)
+    defer delete(tmp_path)
+    merr := os.make_directory(tmp_path)
+    if merr != os.Errno(0) && merr != os.Errno(linux.EEXIST) {
+        panic("Failed to create tmp directory")
+    }
+
+    manifest := load_manifest(allocator, tmp_path)
+    defer deinit_manifest(&manifest, allocator)
+
+    if manifest.deps != nil && len(manifest.deps) > 0 {
+        for dep in manifest.deps {
+            // TODO: Full DAG, cycle detection
+            fmt.eprintf("Installing dep: {}\n", dep)
+        }
+    }
+
+    setup_sandbox(allocator, package_name, tmp_path, &manifest)
+
+    if chk, ok := checksum.?; ok {
+        verify(allocator, tmp_path, chk)
+    }
+
+    rerr := os.rename(tmp_path, path)
+    if rerr != os.Errno(0) {
+        panic("Rename failed")
+    }
+
+    checksum_str := "none"
+    if c, ok := checksum.?; ok {
+        checksum_str = c
+    }
+    update_state(allocator, package_name, manifest.version, checksum_str)
+
+    payload := struct { success: bool, package_name: string }{true, package_name}
+    output, merr2 := json.marshal(payload)
+    if merr2 != nil {
+        panic("JSON marshal failed")
+    }
+    defer delete(output)
+    os.write(os.stdout, output)
+}
+
+remove :: proc(allocator: mem.Allocator, package_name: string, path: string) {
+    manifest := load_manifest(allocator, path)
+    defer deinit_manifest(&manifest, allocator)
+
+    if manifest.bins != nil && len(manifest.bins) > 0 {
+        for bin in manifest.bins {
+            bin_path := fmt.aprintf("/usr/bin/{}", bin)
+            defer delete(bin_path)
+            _ = os.remove(bin_path)
+        }
+    }
+
+    if err := delete_tree(path); err != os.Errno(0) {
+        panic("Delete tree failed")
+    }
+
+    state := load_state(allocator)
+    defer deinit_state(&state, allocator)
+    if pi, found := state.packages[package_name]; found {
+        delete(pi.version, allocator)
+        delete(pi.checksum, allocator)
+        delete_key(&state.packages, package_name)
+    }
+    save_state(&state)
+
+    payload := struct { success: bool, package_name: string }{true, package_name}
+    output, merr := json.marshal(payload)
+    if merr != nil {
+        panic("JSON marshal failed")
+    }
+    defer delete(output)
+    os.write(os.stdout, output)
+}
+
+verify :: proc(allocator: mem.Allocator, path: string, checksum: string) {
+    manifest_path := fmt.aprintf("{}/manifest.json", path)
+    defer delete(manifest_path)
+    data, ok := os.read_entire_file(manifest_path)
+    if !ok {
+        panic("Failed to read manifest for verify")
+    }
+    defer delete(data)
+
+    ctx: sha2.Context_256
+    sha2.init_256(&ctx)
+    sha2.update(&ctx, data)
+    hash: [sha2.DIGEST_SIZE_256]u8
+    sha2.final(&ctx, hash[:])
+
+    computed_builder: strings.Builder
+    strings.builder_init(&computed_builder, allocator)
+    defer strings.builder_destroy(&computed_builder)
+    for b in hash {
+        fmt.sbprintf(&computed_builder, "{:02x}", b)
+    }
+    computed := strings.to_string(computed_builder)
+
+    if computed != checksum {
+        output_error(allocator, .VerificationFailed, "Checksum mismatch")
     }
 }
-fn cleanup(path: []const u8) !void {
-    try fs.cwd().deleteTree(path);
-}
-const STATE_PATH = "/var/lib/hpm/state.json";
-fn loadState(allocator: Allocator) !State {
-    const file = fs.cwd().openFile(STATE_PATH, .{}) catch |err| {
-        if (err == error.FileNotFound) {
-            return State{ .packages = .{} };
+
+setup_sandbox :: proc(allocator: mem.Allocator, package_name: string, path: string, manifest: ^Manifest) {
+    _ = package_name // unused
+    args: [dynamic]string
+    append(&args, "bwrap")
+    append(&args, "--ro-bind", "/usr", "/usr")
+    append(&args, "--ro-bind", "/lib", "/lib")
+    append(&args, "--ro-bind", "/lib64", "/lib64")
+    append(&args, "--ro-bind", "/bin", "/bin")
+    append(&args, "--ro-bind", "/etc", "/etc")
+    append(&args, "--bind", path, "/app")
+    append(&args, "--chdir", "/app")
+    append(&args, "--unshare-all")
+
+    if !manifest.sandbox.network {
+        append(&args, "--unshare-net")
+    } else {
+        append(&args, "--share-net")
+    }
+    if manifest.sandbox.filesystem != nil && len(manifest.sandbox.filesystem) > 0 {
+        for fs_path in manifest.sandbox.filesystem {
+            append(&args, "--bind", fs_path, fs_path)
         }
-        return err;
-    };
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(content);
-    const parsed = try json.parseFromSlice(State, allocator, content, .{ .allocate = .alloc_always });
-    return parsed.value;
+    }
+    append(&args, "--", "sh", "-c", "echo Isolated install complete") // Replace with actual
+
+    code := run_command(args[:])
+    delete(args)
+
+    if code != 0 {
+        output_error(allocator, .InstallFailed, "Sandbox failed")
+    }
 }
-fn saveState(state: State) !void {
-    const file = try fs.cwd().createFile(STATE_PATH, .{});
-    defer file.close();
-    try std.json.Stringify.value(state, .{}, &file.writer());
+
+run_command :: proc(argv: []string) -> i32 {
+    pid := linux.fork()
+    if pid < 0 {
+        panic("Fork failed")
+    }
+    if pid == 0 {
+        c_argv := make([]cstring, len(argv) + 1)
+        defer delete(c_argv)
+        for arg, i in argv {
+            c_argv[i] = strings.clone_to_cstring(arg, context.temp_allocator)
+        }
+        c_argv[len(argv)] = nil
+        path := strings.clone_to_cstring(argv[0], context.temp_allocator)
+        err := linux.execve(path, raw_data(c_argv), nil)
+        linux.exit(127)
+    }
+    status: u32
+    _, werr := linux.waitpid(pid, &status, {}, nil)
+    if werr != os.Errno(0) {
+        return -1
+    }
+    if linux.WIFEXITED(status) {
+        return i32(linux.WEXITSTATUS(status))
+    }
+    return -1
 }
-fn updateState(allocator: Allocator, package: []const u8, version: []const u8, checksum: []const u8) !void {
-    var state = try loadState(allocator);
-    defer state.deinit(allocator);
-    try state.packages.put(
-        allocator,
-        try allocator.dupe(u8, package),
-                           .{
-                               .version = try allocator.dupe(u8, version),
-                           .checksum = try allocator.dupe(u8, checksum),
-                           },
-    );
-    try saveState(state);
+
+delete_tree :: proc(path: string) -> os.Errno {
+    dir, open_err := os.open(path, os.O_RDONLY)
+    if open_err != os.Errno(0) {
+        return open_err
+    }
+    defer os.close(dir)
+
+    entries, read_err := os.read_dir(dir, -1)
+    if read_err != os.Errno(0) {
+        return read_err
+    }
+    defer {
+        for entry in entries {
+            delete(entry.name)
+        }
+        delete(entries)
+    }
+
+    for entry in entries {
+        full_path := fmt.tprintf("%s/%s", path, entry.name)
+        defer delete(full_path)
+        if entry.is_dir {
+            if del_err := delete_tree(full_path); del_err != os.Errno(0) {
+                return del_err
+            }
+        } else {
+            if rem_err := os.remove(full_path); rem_err != os.Errno(0) {
+                return rem_err
+            }
+        }
+    }
+
+    return os.remove_directory(path)
+}
+
+STATE_PATH :: "/var/lib/hpm/state.json"
+
+load_state :: proc(allocator: mem.Allocator) -> State {
+    data, ok := os.read_entire_file(STATE_PATH)
+    if !ok {
+        return State{packages = {}}
+    }
+    defer delete(data)
+    state: State
+    err := json.unmarshal(data, &state, {allocator = allocator})
+    if err != nil {
+        panic("Failed to parse state")
+    }
+    return state
+}
+
+save_state :: proc(state: ^State) {
+    file, open_err := os.open(STATE_PATH, os.O_CREATE | os.O_WRONLY | os.O_TRUNC)
+    if open_err != os.Errno(0) {
+        panic("Failed to open state file")
+    }
+    defer os.close(file)
+    data, marshal_err := json.marshal(state^)
+    if marshal_err != nil {
+        panic("JSON marshal failed")
+    }
+    defer delete(data)
+    _, write_err := os.write(file, data)
+    if write_err != os.Errno(0) {
+        panic("Failed to write state file")
+    }
+}
+
+update_state :: proc(allocator: mem.Allocator, package_name: string, version: string, checksum: string) {
+    state := load_state(allocator)
+    defer deinit_state(&state, allocator)
+    state.packages[strings.clone(package_name, allocator)] = PackageInfo{
+        version = strings.clone(version, allocator),
+        checksum = strings.clone(checksum, allocator),
+    }
+    save_state(&state)
 }
