@@ -1,7 +1,8 @@
 {
-  "": {
-    "version": "",
+  "test": {
     "url": "",
-    "description": ""
-  },
+    "versions": [
+      { "version": "0.1" }
+    ]
+  }
 }
