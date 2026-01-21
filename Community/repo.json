@@ -6,7 +6,7 @@
     ]
   }
   "Blue-Enviroment": {
-    "url": "",
+    "url": "https://github.com/HackerOS-Linux-System/Blue-Enviroment/releases/download/v{version}/Blue-Enviroment.hpm",
     "versions": [
       { "version": "0.2" }
     ]
