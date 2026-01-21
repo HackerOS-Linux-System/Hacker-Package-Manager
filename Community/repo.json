@@ -14,7 +14,7 @@
     "Hacker-Term": {
     "url": "https://github.com/HackerOS-Linux-System/Hacker-Term/releases/download/v{version}/Hacker-Term.hpm",
     "versions": [
-      { "version": "0.2" }
+      { "version": "0.4" }
     ]
   }
     "legendary": {
