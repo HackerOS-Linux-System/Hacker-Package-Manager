@@ -5,4 +5,10 @@
       { "version": "0.1" }
     ]
   }
+  "Blue-Enviroment": {
+    "url": "",
+    "versions": [
+      { "version": "0.2" }
+    ]
+  }
 }
