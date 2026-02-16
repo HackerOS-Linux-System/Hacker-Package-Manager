@@ -1,83 +1,201 @@
-package main
+use anyhow::{anyhow, Context, Result};
+use hk_parser::{HkConfig, HkValue};
+use indexmap::IndexMap;
+use landlock::{
+    path_beneath_rules,
+    Access, AccessFs, PathBeneath, PathFd, RestrictionStatus, Ruleset, RulesetCreatedAttr,
+    ABI,
+};
+use nix::mount::{mount, umount2, MsFlags, MntFlags};
+use nix::sched::{unshare, CloneFlags};
+use nix::sys::pivot_root;
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{chdir, execve, fork, ForkResult, Gid, Pid, Uid};
+use nix::NixPath;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::env;
+use std::ffi::{CStr, CString};
+use std::fs::{self, create_dir_all, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::exit;
 
-import "core:fmt"
-import "core:os"
-import "core:mem"
-import "core:strings"
-import "core:encoding/json"
-import "core:crypto/sha2"
-import "core:sys/linux"
-import "core:strconv"
+const STORE_PATH: &str = "/usr/lib/HackerOS/hpm/store/";
+const STATE_PATH: &str = "/var/lib/hpm/state.json";
 
-Manifest :: struct {
-    name: string,
-    version: string,
-    authors: string,
-    license: string,
-    summary: string,
-    long: string,
-    system_specs: map[string]string,
-    deps: map[string]string,
-    bins: [dynamic]string,
-    sandbox: struct {
-        network: bool,
-        filesystem: [dynamic]string,
-        gui: bool,
-        dev: bool,
-    },
-    install_commands: [dynamic]string,
+#[derive(Debug)]
+struct Manifest {
+    name: String,
+    version: String,
+    authors: String,
+    license: String,
+    summary: String,
+    long: String,
+    system_specs: IndexMap<String, String>,
+    deps: IndexMap<String, String>,
+    bins: Vec<String>,
+    sandbox: Sandbox,
+    install_commands: Vec<String>,
 }
 
-deinit_manifest :: proc(self: ^Manifest, allocator: mem.Allocator) {
-    delete(self.name, allocator)
-    delete(self.version, allocator)
-    delete(self.authors, allocator)
-    delete(self.license, allocator)
-    delete(self.summary, allocator)
-    delete(self.long, allocator)
-    for key, value in self.system_specs {
-        delete(key, allocator)
-        delete(value, allocator)
-    }
-    delete(self.system_specs)
-    for key, value in self.deps {
-        delete(key, allocator)
-        delete(value, allocator)
-    }
-    delete(self.deps)
-    for bin in self.bins {
-        delete(bin, allocator)
-    }
-    delete(self.bins)
-    for path in self.sandbox.filesystem {
-        delete(path, allocator)
-    }
-    delete(self.sandbox.filesystem)
-    for cmd in self.install_commands {
-        delete(cmd, allocator)
-    }
-    delete(self.install_commands)
+#[derive(Debug)]
+struct Sandbox {
+    network: bool,
+    filesystem: Vec<String>,
+    gui: bool,
+    dev: bool,
 }
 
-PackageInfo :: string // checksum
+impl Manifest {
+    fn load_info(path: &str) -> Result<Manifest> {
+        let info_path = format!("{}/info.hk", path);
+        let mut config = hk_parser::load_hk_file(&info_path)
+            .map_err(|e| anyhow!("Failed to load info.hk: {}", e))?;
+        hk_parser::resolve_interpolations(&mut config)
+            .map_err(|e| anyhow!("Failed to resolve interpolations: {}", e))?;
 
-State :: struct {
-    packages: map[string]map[string]PackageInfo,
-}
+        let metadata = config
+            .get("metadata")
+            .ok_or(anyhow!("Missing [metadata] section"))?
+            .as_map()
+            .map_err(|_| anyhow!("Invalid metadata"))?;
 
-deinit_state :: proc(self: ^State, allocator: mem.Allocator) {
-    for pkg, vers in self.packages {
-        for ver, checksum in vers {
-            delete(ver, allocator)
-            delete(checksum, allocator)
+        let name = metadata
+            .get("name")
+            .ok_or(anyhow!("Missing name"))?
+            .as_string()
+            .map_err(|_| anyhow!("Invalid name"))?;
+
+        let version = metadata
+            .get("version")
+            .ok_or(anyhow!("Missing version"))?
+            .as_string()
+            .map_err(|_| anyhow!("Invalid version"))?;
+
+        let authors = metadata
+            .get("authors")
+            .ok_or(anyhow!("Missing authors"))?
+            .as_string()
+            .map_err(|_| anyhow!("Invalid authors"))?;
+
+        let license = metadata
+            .get("license")
+            .ok_or(anyhow!("Missing license"))?
+            .as_string()
+            .map_err(|_| anyhow!("Invalid license"))?;
+
+        let description = config.get("description").and_then(|v| v.as_map().ok());
+
+        let summary = description
+            .and_then(|d| d.get("summary"))
+            .and_then(|v| v.as_string().ok())
+            .unwrap_or_default();
+
+        let long = description
+            .and_then(|d| d.get("long"))
+            .and_then(|v| v.as_string().ok())
+            .unwrap_or_default();
+
+        let specs = config.get("specs").and_then(|v| v.as_map().ok());
+
+        let mut system_specs = IndexMap::new();
+        if let Some(s) = specs {
+            for (k, v) in s {
+                if k != "dependencies" {
+                    system_specs.insert(k.clone(), v.as_string().map_err(|_| anyhow!("Invalid spec value"))?);
+                }
+            }
         }
-        delete(vers)
-        delete(pkg, allocator)
+
+        let deps = if let Some(d) = specs.and_then(|s| s.get("dependencies")).and_then(|v| v.as_map().ok()) {
+            let mut m = IndexMap::new();
+            for (k, v) in d {
+                m.insert(k.clone(), v.as_string().map_err(|_| anyhow!("Invalid dep value"))?);
+            }
+            m
+        } else {
+            IndexMap::new()
+        };
+
+        let bins_map = metadata.get("bins").and_then(|v| v.as_map().ok());
+        let mut bins = Vec::new();
+        if let Some(bm) = bins_map {
+            for (k, v) in bm {
+                if v.as_string().map_err(|_| anyhow!("Invalid bin value"))? == "" {
+                    bins.push(k.clone());
+                }
+            }
+        }
+
+        let sandbox_sec = config.get("sandbox").ok_or(anyhow!("Missing [sandbox] section"))?.as_map().map_err(|_| anyhow!("Invalid sandbox"))?;
+
+        let network = sandbox_sec.get("network").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+        let gui = sandbox_sec.get("gui").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+        let dev = sandbox_sec.get("dev").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+
+        let fs_map = sandbox_sec.get("filesystem").and_then(|v| v.as_map().ok());
+        let mut filesystem = Vec::new();
+        if let Some(fm) = fs_map {
+            for (k, v) in fm {
+                if v.as_string().map_err(|_| anyhow!("Invalid fs value"))? == "" {
+                    filesystem.push(k.clone());
+                }
+            }
+        }
+
+        let install_sec = config.get("install").and_then(|v| v.as_map().ok());
+        let mut install_commands = Vec::new();
+        if let Some(is) = install_sec {
+            if let Some(cmds) = is.get("commands").and_then(|v| v.as_map().ok()) {
+                for (k, v) in cmds {
+                    if v.as_string().map_err(|_| anyhow!("Invalid cmd value"))? == "" {
+                        install_commands.push(k.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(Manifest {
+            name,
+            version,
+            authors,
+            license,
+            summary,
+            long,
+            system_specs,
+            deps,
+            bins,
+            sandbox: Sandbox {
+                network,
+                filesystem,
+                gui,
+                dev,
+            },
+            install_commands,
+        })
     }
-    delete(self.packages)
 }
 
-ErrorCode :: enum i32 {
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct State {
+    packages: HashMap<String, HashMap<String, String>>,
+}
+
+#[derive(Serialize)]
+struct ErrorPayload {
+    err: ErrorInner,
+}
+
+#[derive(Serialize)]
+struct ErrorInner {
+    code: i32,
+    message: String,
+}
+
+#[derive(Debug, PartialEq)]
+enum ErrorCode {
     Success = 0,
     InvalidArgs = 1,
     PackageNotFound = 2,
@@ -88,482 +206,419 @@ ErrorCode :: enum i32 {
     UnknownCommand = 99,
 }
 
-STORE_PATH :: "/usr/lib/HackerOS/hpm/store/"
-
-main :: proc() {
-    arena: mem.Arena
-    backing := make([]u8, 8 * mem.Megabyte)
-    mem.arena_init(&arena, backing)
-    defer delete(backing)
-    allocator := mem.arena_allocator(&arena)
-    context.allocator = allocator
-    args := os.args[1:]
-    if len(args) < 1 {
-        output_error(allocator, .InvalidArgs, "Invalid arguments")
-        return
-    }
-    command := args[0]
-    switch command {
-        case "install":
-            if len(args) < 5 {
-                output_error(allocator, .InvalidArgs, "Usage: backend install <package> <version> <path> <checksum>")
-                return
-            }
-            package_name := args[1]
-            version := args[2]
-            path := args[3]
-            checksum := args[4]
-            install(allocator, package_name, version, path, checksum)
-        case "remove":
-            if len(args) < 4 {
-                output_error(allocator, .InvalidArgs, "Usage: backend remove <package> <version> <path>")
-                return
-            }
-            package_name := args[1]
-            version := args[2]
-            path := args[3]
-            remove(allocator, package_name, version, path)
-        case "verify":
-            if len(args) < 3 {
-                output_error(allocator, .InvalidArgs, "Usage: backend verify <path> <checksum>")
-                return
-            }
-            path := args[1]
-            checksum := args[2]
-            verify(allocator, path, checksum)
-            payload := struct { success: bool }{true}
-            output, merr := json.marshal(payload)
-            if merr != nil {
-                panic("JSON marshal failed")
-            }
-            defer delete(output)
-            os.write(os.stdout, output)
-        case "run":
-            if len(args) < 3 {
-                os.exit(1)
-            }
-            run(allocator, args[1:])
-        case:
-            output_error(allocator, .UnknownCommand, "Unknown command")
-    }
-}
-
-output_error :: proc(allocator: mem.Allocator, code: ErrorCode, msg: string) {
-    payload := struct {
-        err: struct {
-            code: i32,
-            message: string,
+fn output_error(code: ErrorCode, msg: &str) {
+    let payload = ErrorPayload {
+        err: ErrorInner {
+            code: code as i32,
+            message: msg.to_string(),
         },
-    }{{code = i32(code), message = msg}}
-    output, merr := json.marshal(payload)
-    if merr != nil {
-        panic("JSON marshal failed")
-    }
-    os.write(os.stderr, output)
-    delete(output)
-    os.exit(int(i32(code)))
+    };
+    let json = serde_json::to_string(&payload).expect("JSON marshal failed");
+    eprintln!("{}", json);
+    exit(code as i32);
 }
 
-load_info :: proc(allocator: mem.Allocator, path: string) -> Manifest {
-    info_path := fmt.aprintf("{}/info.hk", path)
-    defer delete(info_path)
-    data, ok := os.read_entire_file(info_path)
-    if !ok {
-        panic("Failed to read info.hk")
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        output_error(ErrorCode::InvalidArgs, "Invalid arguments");
     }
-    defer delete(data)
-    lines := strings.split_lines(string(data))
-    defer delete(lines, allocator)
-    manifest: Manifest
-    current_section := ""
-    last_key := ""
-    for line in lines {
-        l := strings.trim_space(line)
-        if l == "" || strings.has_prefix(l, "!") {
-            continue
-        }
-        if strings.has_prefix(l, "[") {
-            end_idx := strings.index(l, "]")
-            if end_idx == -1 { continue }
-            current_section = l[1:end_idx]
-            last_key = ""
-            continue
-        }
-        if strings.has_prefix(l, "->") {
-            l = strings.trim_space(l[2:])
-            idx := strings.index(l, "=>")
-            if idx == -1 {
-                last_key = l
-                continue
-            }
-            key := strings.trim_space(l[:idx])
-            value := strings.trim_space(l[idx+2:])
-            last_key = ""
-            set_value(&manifest, current_section, key, value, allocator)
-        } else if strings.has_prefix(l, "-->") {
-            l = strings.trim_space(l[3:])
-            idx := strings.index(l, "=>")
-            subkey := strings.trim_space(l if idx == -1 else l[:idx])
-            value := "" if idx == -1 else strings.trim_space(l[idx+2:])
-            set_sub_value(&manifest, current_section, last_key, subkey, value, allocator)
-        }
-    }
-    return manifest
-}
 
-set_value :: proc(m: ^Manifest, section, key, value: string, allocator: mem.Allocator) {
-    switch section {
-        case "metadata":
-            switch key {
-                case "name": m.name = strings.clone(value, allocator)
-                case "version": m.version = strings.clone(value, allocator)
-                case "authors": m.authors = strings.clone(value, allocator)
-                case "license": m.license = strings.clone(value, allocator)
+    let command = &args[0];
+    match command.as_str() {
+        "install" => {
+            if args.len() < 5 {
+                output_error(ErrorCode::InvalidArgs, "Usage: backend install <package> <version> <path> <checksum>");
             }
-                case "description":
-                    switch key {
-                        case "summary": m.summary = strings.clone(value, allocator)
-                        case "long": m.long = strings.clone(value, allocator)
-                    }
-                        case "specs":
-                            if key != "dependencies" {
-                                m.system_specs[strings.clone(key, allocator)] = strings.clone(value, allocator)
-                            }
-                        case "sandbox":
-                            switch key {
-                                case "network": m.sandbox.network = value == "true"
-                                case "gui": m.sandbox.gui = value == "true"
-                                case "dev": m.sandbox.dev = value == "true"
-                            }
+            let package_name = &args[1];
+            let version = &args[2];
+            let path = &args[3];
+            let checksum = &args[4];
+            if let Err(e) = install(package_name, version, path, checksum) {
+                output_error(ErrorCode::InstallFailed, &format!("Install failed: {}", e));
+            }
+        }
+        "remove" => {
+            if args.len() < 4 {
+                output_error(ErrorCode::InvalidArgs, "Usage: backend remove <package> <version> <path>");
+            }
+            let package_name = &args[1];
+            let version = &args[2];
+            let path = &args[3];
+            if let Err(e) = remove(package_name, version, path) {
+                output_error(ErrorCode::RemoveFailed, &format!("Remove failed: {}", e));
+            }
+        }
+        "verify" => {
+            if args.len() < 3 {
+                output_error(ErrorCode::InvalidArgs, "Usage: backend verify <path> <checksum>");
+            }
+            let path = &args[1];
+            let checksum = &args[2];
+            if let Err(e) = verify(path, checksum) {
+                output_error(ErrorCode::VerificationFailed, &format!("Verification failed: {}", e));
+            }
+            let payload = serde_json::json!({ "success": true });
+            println!("{}", payload);
+        }
+        "run" => {
+            if args.len() < 3 {
+                exit(1);
+            }
+            if let Err(e) = run(&args[1..]) {
+                eprintln!("Run failed: {}", e);
+                exit(1);
+            }
+        }
+        _ => output_error(ErrorCode::UnknownCommand, "Unknown command"),
     }
 }
 
-set_sub_value :: proc(m: ^Manifest, section, last_key, subkey, value: string, allocator: mem.Allocator) {
-    switch section {
-        case "metadata":
-            if last_key == "bins" && value == "" {
-                append(&m.bins, strings.clone(subkey, allocator))
-            }
-        case "specs":
-            if last_key == "dependencies" {
-                m.deps[strings.clone(subkey, allocator)] = strings.clone(value, allocator)
-            }
-        case "sandbox":
-            if last_key == "filesystem" && value == "" {
-                append(&m.sandbox.filesystem, strings.clone(subkey, allocator))
-            }
-        case "install":
-            if last_key == "commands" && value == "" {
-                append(&m.install_commands, strings.clone(subkey, allocator))
-            }
+fn install(package_name: &str, version: &str, path: &str, checksum: &str) -> Result<()> {
+    let tmp_path = format!("{}.tmp", path);
+    fs::create_dir_all(&tmp_path).context("Failed to create tmp directory")?;
+
+    let contents_path = format!("{}/contents", &tmp_path);
+    if Path::new(&contents_path).exists() {
+        for entry in fs::read_dir(&contents_path)? {
+            let entry = entry?;
+            let old_p = entry.path();
+            let file_name = entry.file_name();
+            let new_p = Path::new(&tmp_path).join(file_name);
+            fs::rename(&old_p, &new_p).context("Move failed")?;
+        }
+        fs::remove_dir(&contents_path).context("Remove contents dir failed")?;
     }
+
+    let manifest = Manifest::load_info(&tmp_path)?;
+
+    if !manifest.deps.is_empty() {
+        for (dep, req) in manifest.deps {
+            eprintln!("Dependency: {} {}", dep, req);
+        }
+    }
+
+    setup_sandbox(&tmp_path, &manifest, true, None, vec![]).context("Sandbox setup failed")?;
+
+    verify(&tmp_path, checksum)?;
+
+    fs::rename(&tmp_path, path).context("Rename failed")?;
+
+    update_state(package_name, version, checksum)?;
+
+    let payload = serde_json::json!({ "success": true, "package_name": package_name });
+    println!("{}", payload);
+
+    Ok(())
 }
 
-install :: proc(allocator: mem.Allocator, package_name: string, version: string, path: string, checksum: string) {
-    tmp_path := fmt.aprintf("{}.tmp", path)
-    defer delete(tmp_path)
-    merr := os.make_directory(tmp_path)
-    if merr != nil {
-        ge, ok := merr.(os.General_Error)
-        if !(ok && ge == .Exist) {
-            panic("Failed to create tmp directory")
+fn remove(package_name: &str, version: &str, path: &str) -> Result<()> {
+    let manifest = Manifest::load_info(path)?;
+
+    for bin in &manifest.bins {
+        let bin_path = format!("/usr/bin/{}", bin);
+        let _ = fs::remove_file(&bin_path);
+    }
+
+    fs::remove_dir_all(path).context("Delete tree failed")?;
+
+    let mut state = load_state()?;
+    if let Some(vers) = state.packages.get_mut(package_name) {
+        vers.remove(version);
+        if vers.is_empty() {
+            state.packages.remove(package_name);
         }
     }
-    // Move contents/* to tmp_path
-    contents_path := fmt.aprintf("{}/contents", tmp_path)
-    defer delete(contents_path)
-    if os.exists(contents_path) {
-        dir, oerr := os.open(contents_path, os.O_RDONLY)
-        if oerr != nil { panic("Open contents failed") }
-        defer os.close(dir)
-        entries, rerr := os.read_dir(dir, -1)
-        if rerr != nil { panic("Read dir failed") }
-        defer {
-            for entry in entries {
-                delete(entry.name, allocator)
-            }
-            delete(entries, allocator)
-        }
-        for entry in entries {
-            old_p := fmt.aprintf("{}/{}", contents_path, entry.name)
-            new_p := fmt.aprintf("{}/{}", tmp_path, entry.name)
-            defer {
-                delete(old_p, allocator)
-                delete(new_p, allocator)
-            }
-            rerr := os.rename(old_p, new_p)
-            if rerr != nil { panic("Move failed") }
-        }
-        os.remove_directory(contents_path)
-    }
-    manifest := load_info(allocator, tmp_path)
-    defer deinit_manifest(&manifest, allocator)
-    if len(manifest.deps) > 0 {
-        for dep, req in manifest.deps {
-            // TODO: Deps handled in CLI
-            fmt.eprintf("Dependency: {} {}\n", dep, req)
-        }
-    }
-    setup_sandbox(allocator, tmp_path, &manifest, true)
-    verify(allocator, tmp_path, checksum)
-    rerr := os.rename(tmp_path, path)
-    if rerr != nil {
-        panic("Rename failed")
-    }
-    update_state(allocator, package_name, version, checksum)
-    payload := struct { success: bool, package_name: string }{true, package_name}
-    output, merr2 := json.marshal(payload)
-    if merr2 != nil {
-        panic("JSON marshal failed")
-    }
-    defer delete(output)
-    os.write(os.stdout, output)
+    save_state(&state)?;
+
+    let payload = serde_json::json!({ "success": true, "package_name": package_name });
+    println!("{}", payload);
+
+    Ok(())
 }
 
-remove :: proc(allocator: mem.Allocator, package_name: string, version: string, path: string) {
-    manifest := load_info(allocator, path)
-    defer deinit_manifest(&manifest, allocator)
-    if len(manifest.bins) > 0 {
-        for bin in manifest.bins {
-            bin_path := fmt.aprintf("/usr/bin/{}", bin)
-            defer delete(bin_path, allocator)
-            _ = os.remove(bin_path)
-        }
-    }
-    if err := delete_tree(path); err != nil {
-        panic("Delete tree failed")
-    }
-    state := load_state(allocator)
-    defer deinit_state(&state, allocator)
-    if vers, found := state.packages[package_name]; found {
-        vers_copy := vers
-        if checksum, ok := vers_copy[version]; ok {
-            delete(checksum, allocator)
-            delete_key(&vers_copy, version)
-            if len(vers_copy) == 0 {
-                delete(vers_copy)
-                delete_key(&state.packages, package_name)
-            } else {
-                state.packages[package_name] = vers_copy
-            }
-        }
-    }
-    save_state(&state)
-    payload := struct { success: bool, package_name: string }{true, package_name}
-    output, merr := json.marshal(payload)
-    if merr != nil {
-        panic("JSON marshal failed")
-    }
-    defer delete(output)
-    os.write(os.stdout, output)
-}
+fn verify(path: &str, checksum: &str) -> Result<()> {
+    let info_path = format!("{}/info.hk", path);
+    let data = fs::read(&info_path).context("Failed to read info.hk for verify")?;
 
-verify :: proc(allocator: mem.Allocator, path: string, checksum: string) {
-    info_path := fmt.aprintf("{}/info.hk", path)
-    defer delete(info_path, allocator)
-    data, ok := os.read_entire_file(info_path)
-    if !ok {
-        panic("Failed to read info.hk for verify")
-    }
-    defer delete(data, allocator)
-    ctx: sha2.Context_256
-    sha2.init_256(&ctx)
-    sha2.update(&ctx, data)
-    hash: [sha2.DIGEST_SIZE_256]u8
-    sha2.final(&ctx, hash[:])
-    computed_builder: strings.Builder
-    strings.builder_init(&computed_builder, allocator)
-    defer strings.builder_destroy(&computed_builder)
-    for b in hash {
-        fmt.sbprintf(&computed_builder, "{:02x}", b)
-    }
-    computed := strings.to_string(computed_builder)
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let hash = hasher.finalize();
+    let computed = hex::encode(hash);
+
     if computed != checksum {
-        output_error(allocator, .VerificationFailed, "Checksum mismatch")
+        return Err(anyhow!("Checksum mismatch"));
     }
+
+    Ok(())
 }
 
-setup_sandbox :: proc(allocator: mem.Allocator, path: string, manifest: ^Manifest, is_install: bool, bin: string = "", extra_args: []string = nil) {
-    args: [dynamic]string
-    defer {
-        for arg in args {
-            delete(arg, allocator)
-        }
-        delete(args)
-    }
-    append(&args, strings.clone("bwrap", allocator))
-    append(&args, strings.clone("--ro-bind", allocator), strings.clone("/usr", allocator), strings.clone("/usr", allocator))
-    append(&args, strings.clone("--ro-bind", allocator), strings.clone("/lib", allocator), strings.clone("/lib", allocator))
-    append(&args, strings.clone("--ro-bind", allocator), strings.clone("/lib64", allocator), strings.clone("/lib64", allocator))
-    append(&args, strings.clone("--ro-bind", allocator), strings.clone("/bin", allocator), strings.clone("/bin", allocator))
-    append(&args, strings.clone("--ro-bind", allocator), strings.clone("/etc", allocator), strings.clone("/etc", allocator))
-    append(&args, strings.clone("--bind", allocator), strings.clone(path, allocator), strings.clone("/app", allocator))
-    append(&args, strings.clone("--chdir", allocator), strings.clone("/app", allocator))
-    append(&args, strings.clone("--unshare-all", allocator))
-    if manifest.sandbox.network {
-        append(&args, strings.clone("--share-net", allocator))
-    } else {
-        append(&args, strings.clone("--unshare-net", allocator))
-    }
-    if manifest.sandbox.gui {
-        append(&args, strings.clone("--ro-bind", allocator), strings.clone("/tmp/.X11-unix", allocator), strings.clone("/tmp/.X11-unix", allocator))
-        append(&args, strings.clone("--share-ipc", allocator))
-        display := os.get_env("DISPLAY", allocator)
-        defer delete(display, allocator)
-        append(&args, strings.clone("--set-var", allocator), strings.clone("DISPLAY", allocator), display)
-    }
-    if manifest.sandbox.dev {
-        append(&args, strings.clone("--dev-bind", allocator), strings.clone("/dev", allocator), strings.clone("/dev", allocator))
-    }
-    if len(manifest.sandbox.filesystem) > 0 {
-        for fs_path in manifest.sandbox.filesystem {
-            append(&args, strings.clone("--bind", allocator), strings.clone(fs_path, allocator), strings.clone(fs_path, allocator))
-        }
-    }
-    if is_install {
-        install_cmd := "echo 'Isolated install complete'"
-        if len(manifest.install_commands) > 0 {
-            sb: strings.Builder
-            strings.builder_init(&sb, allocator)
-            defer strings.builder_destroy(&sb)
-            for cmd, i in manifest.install_commands {
-                if i > 0 { fmt.sbprint(&sb, " && ") }
-                fmt.sbprint(&sb, cmd)
+fn setup_sandbox(
+    path: &str,
+    manifest: &Manifest,
+    is_install: bool,
+    bin: Option<&str>,
+    extra_args: Vec<String>,
+) -> Result<()> {
+    let display = env::var("DISPLAY").ok();
+
+    match unsafe { fork()? } {
+        ForkResult::Parent { child, .. } => {
+            let status = waitpid(child, Some(WaitPidFlag::empty()))?;
+            if let WaitStatus::Exited(_, code) = status {
+                if code != 0 {
+                    return Err(anyhow!("Sandbox command failed with code {}", code));
+                }
+            } else {
+                return Err(anyhow!("Sandbox failed"));
             }
-            install_cmd = strings.to_string(sb)
+            Ok(())
         }
-        append(&args, strings.clone("--", allocator), strings.clone("sh", allocator), strings.clone("-c", allocator), strings.clone(install_cmd, allocator))
-    } else {
-        bin_path := fmt.aprintf("/app/{}", bin)
-        defer delete(bin_path, allocator)
-        append(&args, strings.clone("--", allocator), bin_path)
-        for arg in extra_args {
-            append(&args, strings.clone(arg, allocator))
-        }
-    }
-    code := run_command(args[:])
-    if code != 0 {
-        if is_install {
-            output_error(allocator, .InstallFailed, "Sandbox failed")
-        } else {
-            os.exit(int(code))
-        }
-    }
-}
-
-run :: proc(allocator: mem.Allocator, args: []string) {
-    package_name := args[0]
-    bin := args[1]
-    extra_args := args[2:]
-    path := fmt.aprintf("{}{}/current", STORE_PATH, package_name)
-    defer delete(path, allocator)
-    manifest := load_info(allocator, path)
-    defer deinit_manifest(&manifest, allocator)
-    setup_sandbox(allocator, path, &manifest, false, bin, extra_args)
-}
-
-run_command :: proc(argv: []string) -> i32 {
-    pid, ferr := linux.fork()
-    if ferr != .NONE {
-        panic("Fork failed")
-    }
-    if pid == 0 {
-        c_argv := make([]cstring, len(argv) + 1, context.temp_allocator)
-        for arg, i in argv {
-            c_argv[i] = strings.clone_to_cstring(arg, context.temp_allocator)
-        }
-        c_argv[len(argv)] = nil
-        path := strings.clone_to_cstring(argv[0], context.temp_allocator)
-        err := linux.execve(path, raw_data(c_argv), nil)
-        linux.exit(127)
-    }
-    status: u32
-    _, werr := linux.waitpid(pid, &status, {}, nil)
-    if werr != .NONE {
-        return -1
-    }
-    if linux.WIFEXITED(status) {
-        return i32(linux.WEXITSTATUS(status))
-    }
-    return -1
-}
-
-delete_tree :: proc(path: string) -> os.Error {
-    dir, open_err := os.open(path, os.O_RDONLY)
-    if open_err != nil {
-        return open_err
-    }
-    defer os.close(dir)
-    entries, read_err := os.read_dir(dir, -1)
-    if read_err != nil {
-        return read_err
-    }
-    defer {
-        for entry in entries {
-            delete(entry.name)
-        }
-        delete(entries)
-    }
-    for entry in entries {
-        full_path := fmt.tprintf("%s/%s", path, entry.name)
-        defer delete(full_path)
-        if entry.is_dir {
-            if del_err := delete_tree(full_path); del_err != nil {
-                return del_err
+        ForkResult::Child => {
+            // Unshare namespaces
+            let mut flags = CloneFlags::CLONE_NEWUSER
+                | CloneFlags::CLONE_NEWNS
+                | CloneFlags::CLONE_NEWUTS
+                | CloneFlags::CLONE_NEWPID
+                | CloneFlags::CLONE_NEWCGROUP;
+            if !manifest.sandbox.network {
+                flags |= CloneFlags::CLONE_NEWNET;
             }
-        } else {
-            if rem_err := os.remove(full_path); rem_err != nil {
-                return rem_err
+            if !manifest.sandbox.gui {
+                flags |= CloneFlags::CLONE_NEWIPC;
             }
+            unshare(flags).context("Unshare failed")?;
+
+            // Make mounts private
+            mount(
+                None::<&str>,
+                "/",
+                None::<&str>,
+                MsFlags::MS_PRIVATE | MsFlags::MS_REC,
+                None::<&str>,
+            )?;
+
+            // Set up user mapping
+            let uid = Uid::current();
+            let gid = Gid::current();
+            let mut uid_map = File::create("/proc/self/uid_map").context("Open uid_map failed")?;
+            writeln!(uid_map, "0 {} 1", uid).context("Write uid_map failed")?;
+            let mut setgroups = File::create("/proc/self/setgroups").context("Open setgroups failed")?;
+            writeln!(setgroups, "deny").context("Write setgroups failed")?;
+            let mut gid_map = File::create("/proc/self/gid_map").context("Open gid_map failed")?;
+            writeln!(gid_map, "0 {} 1", gid).context("Write gid_map failed")?;
+
+            // Create new root
+            let new_root_str = format!("/tmp/hpm_newroot_{}", nix::unistd::getpid());
+            let new_root = PathBuf::from(&new_root_str);
+            create_dir_all(&new_root)?;
+            mount(Some("tmpfs"), new_root_str.as_str(), Some("tmpfs"), MsFlags::empty(), None::<&str>)?;
+
+            // Mount RO binds
+            let ro_paths = vec!["/usr", "/lib", "/lib64", "/bin", "/etc"];
+            for p in ro_paths {
+                let target = new_root.join(p.trim_start_matches('/'));
+                create_dir_all(&target)?;
+                mount(
+                    Some(p),
+                    target.to_str().unwrap(),
+                    None::<&str>,
+                    MsFlags::MS_BIND | MsFlags::MS_REC | MsFlags::MS_RDONLY,
+                    None::<&str>,
+                )?;
+            }
+
+            // Mount /app
+            let app_path = new_root.join("app");
+            create_dir_all(&app_path)?;
+            mount(
+                Some(path),
+                app_path.to_str().unwrap(),
+                None::<&str>,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                None::<&str>,
+            )?;
+
+            // Mount /tmp as tmpfs
+            let tmp_path = new_root.join("tmp");
+            create_dir_all(&tmp_path)?;
+            mount(
+                Some("tmpfs"),
+                tmp_path.to_str().unwrap(),
+                Some("tmpfs"),
+                MsFlags::empty(),
+                None::<&str>,
+            )?;
+
+            // Mount GUI if needed
+            if manifest.sandbox.gui {
+                let x11_path = tmp_path.join(".X11-unix");
+                create_dir_all(&x11_path)?;
+                mount(
+                    Some("/tmp/.X11-unix"),
+                    x11_path.to_str().unwrap(),
+                    None::<&str>,
+                    MsFlags::MS_BIND | MsFlags::MS_REC,
+                    None::<&str>,
+                )?;
+                if let Some(d) = display {
+                    env::set_var("DISPLAY", d);
+                }
+            }
+
+            // Mount dev if needed
+            if manifest.sandbox.dev {
+                let dev_path = new_root.join("dev");
+                create_dir_all(&dev_path)?;
+                mount(
+                    Some("/dev"),
+                    dev_path.to_str().unwrap(),
+                    None::<&str>,
+                    MsFlags::MS_BIND | MsFlags::MS_REC,
+                    None::<&str>,
+                )?;
+            }
+
+            // Mount extra filesystems
+            for fs_p in &manifest.sandbox.filesystem {
+                let target_path = fs_p.trim_start_matches('/');
+                let target = new_root.join(target_path);
+                if let Some(parent) = target.parent() {
+                    create_dir_all(parent)?;
+                }
+                mount(
+                    Some(fs_p.as_str()),
+                    target.to_str().unwrap(),
+                    None::<&str>,
+                    MsFlags::MS_BIND | MsFlags::MS_REC,
+                    None::<&str>,
+                )?;
+            }
+
+            // Mount proc
+            let proc_path = new_root.join("proc");
+            create_dir_all(&proc_path)?;
+            mount(
+                Some("proc"),
+                proc_path.to_str().unwrap(),
+                Some("proc"),
+                MsFlags::empty(),
+                None::<&str>,
+            )?;
+
+            // Mount sys
+            let sys_path = new_root.join("sys");
+            create_dir_all(&sys_path)?;
+            mount(
+                Some("sysfs"),
+                sys_path.to_str().unwrap(),
+                Some("sysfs"),
+                MsFlags::empty(),
+                None::<&str>,
+            )?;
+
+            // Pivot root
+            chdir(&new_root)?;
+            let old_root_rel = "old_root";
+            create_dir_all(old_root_rel)?;
+            pivot_root(".", old_root_rel)?;
+            chdir("/")?;
+            umount2("/old_root", MntFlags::MNT_DETACH)?;
+
+            // Chdir to /app
+            chdir("/app")?;
+
+            // Landlock
+            let abi = ABI::V1;
+            let mut ruleset: Ruleset = Ruleset::from_abi(abi).handle_access(AccessFs::from_all(abi))?;
+            let attr: RulesetCreatedAttr = ruleset.create()?;
+
+            let ro_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
+            attr.add_rules(path_beneath_rules(&["/usr", "/lib", "/lib64", "/bin", "/etc"], ro_access))?;
+
+            let proc_sys_access = AccessFs::ReadFile | AccessFs::ReadDir;
+            attr.add_rules(path_beneath_rules(&["/proc", "/sys"], proc_sys_access))?;
+
+            attr.add_rule(PathBeneath::new(PathFd::open("/app")?, AccessFs::from_all(abi)))?;
+
+            if manifest.sandbox.dev {
+                attr.add_rule(PathBeneath::new(PathFd::open("/dev")?, AccessFs::from_all(abi)))?;
+            }
+
+            attr.add_rule(PathBeneath::new(PathFd::open("/tmp")?, AccessFs::from_all(abi)))?;
+
+            for fs_p in &manifest.sandbox.filesystem {
+                attr.add_rule(PathBeneath::new(PathFd::open(fs_p)?, AccessFs::from_all(abi)))?;
+            }
+
+            let status = attr.restrict_self()?;
+            if status != RestrictionStatus::FullyEnforced {
+                exit(1);
+            }
+
+            // No seccomp needed, as unshare_net handles network
+
+            // Exec
+            let (cmd, args_c): (CString, Vec<CString>) = if is_install {
+                let install_cmd = if manifest.install_commands.is_empty() {
+                    "echo 'Isolated install complete'".to_string()
+                } else {
+                    manifest.install_commands.join(" && ")
+                };
+                (
+                    CString::new("/bin/sh")?,
+                    vec![CString::new("-c")?, CString::new(install_cmd)?],
+                )
+            } else {
+                let bin = bin.expect("Bin required for run");
+                let bin_path = format!("/app/{}", bin);
+                let mut a = vec![CString::new(bin_path.as_str())?];
+                for arg in extra_args {
+                    a.push(CString::new(arg)?);
+                }
+                (CString::new(bin_path)?, a)
+            };
+
+            execve(&cmd, &args_c.iter().map(|c| c.as_c_str()).collect::<Vec<_>>(), &[] as &[&CStr])?;
+            unreachable!()
         }
     }
-    return os.remove_directory(path)
 }
 
-STATE_PATH :: "/var/lib/hpm/state.json"
+fn run(args: &[String]) -> Result<()> {
+    let package_name = &args[0];
+    let bin = &args[1];
+    let extra_args = args[2..].to_vec();
 
-load_state :: proc(allocator: mem.Allocator) -> State {
-    data, ok := os.read_entire_file(STATE_PATH)
-    if !ok {
-        return State{packages = {}}
-    }
-    defer delete(data)
-    state: State
-    err := json.unmarshal(data, &state, allocator = allocator)
-    if err != nil {
-        panic("Failed to parse state")
-    }
-    return state
+    let path = format!("{}{}/current", STORE_PATH, package_name);
+
+    let manifest = Manifest::load_info(&path)?;
+
+    setup_sandbox(&path, &manifest, false, Some(bin), extra_args)?;
+
+    Ok(())
 }
 
-save_state :: proc(state: ^State) {
-    file, open_err := os.open(STATE_PATH, os.O_CREATE | os.O_WRONLY | os.O_TRUNC)
-    if open_err != nil {
-        panic("Failed to open state file")
+fn load_state() -> Result<State> {
+    if !Path::new(STATE_PATH).exists() {
+        return Ok(State::default());
     }
-    defer os.close(file)
-    data, marshal_err := json.marshal(state^)
-    if marshal_err != nil {
-        panic("JSON marshal failed")
-    }
-    defer delete(data)
-    _, write_err := os.write(file, data)
-    if write_err != nil {
-        panic("Failed to write state file")
-    }
+    let data = fs::read(STATE_PATH)?;
+    serde_json::from_slice(&data).map_err(Into::into)
 }
 
-update_state :: proc(allocator: mem.Allocator, package_name: string, version: string, checksum: string) {
-    state := load_state(allocator)
-    defer deinit_state(&state, allocator)
-    pkg_key := strings.clone(package_name, allocator)
-    ver_key := strings.clone(version, allocator)
-    chk := strings.clone(checksum, allocator)
-    if _, ok := state.packages[pkg_key]; !ok {
-        state.packages[pkg_key] = {}
-    }
-    inner := state.packages[pkg_key]
-    inner[ver_key] = chk
-    state.packages[pkg_key] = inner
+fn save_state(state: &State) -> Result<()> {
+    let data = serde_json::to_vec(state)?;
+    fs::write(STATE_PATH, data)?;
+    Ok(())
+}
+
+fn update_state(package_name: &str, version: &str, checksum: &str) -> Result<()> {
+    let mut state = load_state()?;
+    state
+        .packages
+        .entry(package_name.to_string())
+        .or_insert_with(HashMap::new)
+        .insert(version.to_string(), checksum.to_string());
     save_state(&state)
 }
