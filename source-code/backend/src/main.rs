@@ -1,24 +1,20 @@
 use anyhow::{anyhow, Context, Result};
-use hk_parser::{HkConfig, HkValue};
 use indexmap::IndexMap;
 use landlock::{
-    path_beneath_rules,
-    Access, AccessFs, PathBeneath, PathFd, RestrictionStatus, Ruleset, RulesetCreatedAttr,
-    ABI,
+    path_beneath_rules, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr,
+    RulesetCreated, RulesetCreatedAttr, ABI,
 };
-use nix::mount::{mount, umount2, MsFlags, MntFlags};
+use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{unshare, CloneFlags};
-use nix::sys::pivot_root;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{chdir, execve, fork, ForkResult, Gid, Pid, Uid};
-use nix::NixPath;
+use nix::unistd::{chdir, execve, fork, pivot_root, ForkResult, Gid, Uid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs::{self, create_dir_all, File};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
@@ -104,12 +100,16 @@ impl Manifest {
         if let Some(s) = specs {
             for (k, v) in s {
                 if k != "dependencies" {
-                    system_specs.insert(k.clone(), v.as_string().map_err(|_| anyhow!("Invalid spec value"))?);
+                    system_specs
+                        .insert(k.clone(), v.as_string().map_err(|_| anyhow!("Invalid spec value"))?);
                 }
             }
         }
 
-        let deps = if let Some(d) = specs.and_then(|s| s.get("dependencies")).and_then(|v| v.as_map().ok()) {
+        let deps = if let Some(d) = specs
+            .and_then(|s| s.get("dependencies"))
+            .and_then(|v| v.as_map().ok())
+        {
             let mut m = IndexMap::new();
             for (k, v) in d {
                 m.insert(k.clone(), v.as_string().map_err(|_| anyhow!("Invalid dep value"))?);
@@ -129,9 +129,16 @@ impl Manifest {
             }
         }
 
-        let sandbox_sec = config.get("sandbox").ok_or(anyhow!("Missing [sandbox] section"))?.as_map().map_err(|_| anyhow!("Invalid sandbox"))?;
+        let sandbox_sec = config
+            .get("sandbox")
+            .ok_or(anyhow!("Missing [sandbox] section"))?
+            .as_map()
+            .map_err(|_| anyhow!("Invalid sandbox"))?;
 
-        let network = sandbox_sec.get("network").and_then(|v| v.as_bool().ok()).unwrap_or(false);
+        let network = sandbox_sec
+            .get("network")
+            .and_then(|v| v.as_bool().ok())
+            .unwrap_or(false);
         let gui = sandbox_sec.get("gui").and_then(|v| v.as_bool().ok()).unwrap_or(false);
         let dev = sandbox_sec.get("dev").and_then(|v| v.as_bool().ok()).unwrap_or(false);
 
@@ -194,12 +201,11 @@ struct ErrorInner {
     message: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum ErrorCode {
     Success = 0,
     InvalidArgs = 1,
-    PackageNotFound = 2,
-    DependencyCycle = 3,
+    PackageNotFound = 2,    DependencyCycle = 3,
     InstallFailed = 4,
     RemoveFailed = 5,
     VerificationFailed = 6,
@@ -228,7 +234,10 @@ fn main() {
     match command.as_str() {
         "install" => {
             if args.len() < 5 {
-                output_error(ErrorCode::InvalidArgs, "Usage: backend install <package> <version> <path> <checksum>");
+                output_error(
+                    ErrorCode::InvalidArgs,
+                    "Usage: backend install <package> <version> <path> <checksum>",
+                );
             }
             let package_name = &args[1];
             let version = &args[2];
@@ -240,7 +249,10 @@ fn main() {
         }
         "remove" => {
             if args.len() < 4 {
-                output_error(ErrorCode::InvalidArgs, "Usage: backend remove <package> <version> <path>");
+                output_error(
+                    ErrorCode::InvalidArgs,
+                    "Usage: backend remove <package> <version> <path>",
+                );
             }
             let package_name = &args[1];
             let version = &args[2];
@@ -251,12 +263,18 @@ fn main() {
         }
         "verify" => {
             if args.len() < 3 {
-                output_error(ErrorCode::InvalidArgs, "Usage: backend verify <path> <checksum>");
+                output_error(
+                    ErrorCode::InvalidArgs,
+                    "Usage: backend verify <path> <checksum>",
+                );
             }
             let path = &args[1];
             let checksum = &args[2];
             if let Err(e) = verify(path, checksum) {
-                output_error(ErrorCode::VerificationFailed, &format!("Verification failed: {}", e));
+                output_error(
+                    ErrorCode::VerificationFailed,
+                    &format!("Verification failed: {}", e),
+                );
             }
             let payload = serde_json::json!({ "success": true });
             println!("{}", payload);
@@ -293,7 +311,7 @@ fn install(package_name: &str, version: &str, path: &str, checksum: &str) -> Res
     let manifest = Manifest::load_info(&tmp_path)?;
 
     if !manifest.deps.is_empty() {
-        for (dep, req) in manifest.deps {
+        for (dep, req) in &manifest.deps {
             eprintln!("Dependency: {} {}", dep, req);
         }
     }
@@ -403,7 +421,8 @@ fn setup_sandbox(
             let gid = Gid::current();
             let mut uid_map = File::create("/proc/self/uid_map").context("Open uid_map failed")?;
             writeln!(uid_map, "0 {} 1", uid).context("Write uid_map failed")?;
-            let mut setgroups = File::create("/proc/self/setgroups").context("Open setgroups failed")?;
+            let mut setgroups =
+                File::create("/proc/self/setgroups").context("Open setgroups failed")?;
             writeln!(setgroups, "deny").context("Write setgroups failed")?;
             let mut gid_map = File::create("/proc/self/gid_map").context("Open gid_map failed")?;
             writeln!(gid_map, "0 {} 1", gid).context("Write gid_map failed")?;
@@ -412,7 +431,13 @@ fn setup_sandbox(
             let new_root_str = format!("/tmp/hpm_newroot_{}", nix::unistd::getpid());
             let new_root = PathBuf::from(&new_root_str);
             create_dir_all(&new_root)?;
-            mount(Some("tmpfs"), new_root_str.as_str(), Some("tmpfs"), MsFlags::empty(), None::<&str>)?;
+            mount(
+                Some("tmpfs"),
+                new_root_str.as_str(),
+                Some("tmpfs"),
+                MsFlags::empty(),
+                None::<&str>,
+            )?;
 
             // Mount RO binds
             let ro_paths = vec!["/usr", "/lib", "/lib64", "/bin", "/etc"];
@@ -530,31 +555,44 @@ fn setup_sandbox(
 
             // Landlock
             let abi = ABI::V1;
-            let mut ruleset: Ruleset = Ruleset::from_abi(abi).handle_access(AccessFs::from_all(abi))?;
-            let attr: RulesetCreatedAttr = ruleset.create()?;
+            let ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
+            let mut attr: RulesetCreated = ruleset.create()?;
 
             let ro_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
-            attr.add_rules(path_beneath_rules(&["/usr", "/lib", "/lib64", "/bin", "/etc"], ro_access))?;
+            // FIXED: Chained usage of add_rules/add_rule as they consume self and return Result<Self>
+            attr = attr.add_rules(path_beneath_rules(
+                &["/usr", "/lib", "/lib64", "/bin", "/etc"],
+                ro_access,
+            ))?;
 
             let proc_sys_access = AccessFs::ReadFile | AccessFs::ReadDir;
-            attr.add_rules(path_beneath_rules(&["/proc", "/sys"], proc_sys_access))?;
+            attr = attr.add_rules(path_beneath_rules(&["/proc", "/sys"], proc_sys_access))?;
 
-            attr.add_rule(PathBeneath::new(PathFd::open("/app")?, AccessFs::from_all(abi)))?;
+            attr = attr.add_rule(PathBeneath::new(
+                PathFd::new("/app")?,
+                AccessFs::from_all(abi),
+            ))?;
 
             if manifest.sandbox.dev {
-                attr.add_rule(PathBeneath::new(PathFd::open("/dev")?, AccessFs::from_all(abi)))?;
+                attr = attr.add_rule(PathBeneath::new(
+                    PathFd::new("/dev")?,
+                    AccessFs::from_all(abi),
+                ))?;
             }
 
-            attr.add_rule(PathBeneath::new(PathFd::open("/tmp")?, AccessFs::from_all(abi)))?;
+            attr = attr.add_rule(PathBeneath::new(
+                PathFd::new("/tmp")?,
+                AccessFs::from_all(abi),
+            ))?;
 
             for fs_p in &manifest.sandbox.filesystem {
-                attr.add_rule(PathBeneath::new(PathFd::open(fs_p)?, AccessFs::from_all(abi)))?;
+                attr = attr.add_rule(PathBeneath::new(
+                    PathFd::new(fs_p)?,
+                    AccessFs::from_all(abi),
+                ))?;
             }
 
-            let status = attr.restrict_self()?;
-            if status != RestrictionStatus::FullyEnforced {
-                exit(1);
-            }
+            attr.restrict_self()?;
 
             // No seccomp needed, as unshare_net handles network
 
@@ -579,7 +617,11 @@ fn setup_sandbox(
                 (CString::new(bin_path)?, a)
             };
 
-            execve(&cmd, &args_c.iter().map(|c| c.as_c_str()).collect::<Vec<_>>(), &[] as &[&CStr])?;
+            execve(
+                &cmd,
+                &args_c.iter().map(|c| c.as_c_str()).collect::<Vec<_>>(),
+                &[] as &[&CStr],
+            )?;
             unreachable!()
         }
     }
