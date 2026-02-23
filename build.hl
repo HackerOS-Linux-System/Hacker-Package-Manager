@@ -1,6 +1,6 @@
-// crystal
 // odin
+// cargo
 
 > cd source-code
->>> cd cli && crystal build src/main.cr --release
->>> cd backend && odin build .
+>>> cd cli && odin build . -out:hpm
+>>> cd backend && cargo build --release
