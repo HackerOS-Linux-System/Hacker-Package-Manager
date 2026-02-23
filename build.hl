@@ -1,5 +1,6 @@
 // odin
 // cargo
+// libseccomp-dev
 
 > cd source-code
 >>> cd cli && odin build . -out:hpm
