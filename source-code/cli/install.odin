@@ -65,7 +65,7 @@ deinit_manifest :: proc(m: ^Manifest, allocator: mem.Allocator) {
 }
 refresh :: proc(allocator: mem.Allocator) -> Error {
     log_to_file("INFO", "Refreshing package index")
-    temp_path := "/tmp/repo.json"
+    temp_path := "/usr/lib/HackerOS/hpm/repo.json"
     err := download_file(allocator, REPO_JSON_URL, temp_path)
     if err != .None {
         log_to_file("ERROR", "Download failed for repo.json")
