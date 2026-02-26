@@ -10,8 +10,10 @@ import "core:thread"
 import "core:mem"
 import "core:path/filepath"
 import "core:io"
+
 WIFEXITED :: proc "contextless" (status: i32) -> bool { return ((status) & 0o177) == 0 }
 WEXITSTATUS :: proc "contextless" (status: i32) -> i32 { return ((status) >> 8) & 0x000000ff }
+
 run_command :: proc(args: []string) -> (int, Error) {
     if len(args) == 0 {
         return 1, .InvalidArgs
@@ -68,16 +70,29 @@ run_command :: proc(args: []string) -> (int, Error) {
     }
     return 1, .BackendFailed
 }
+
 download_file :: proc(allocator: mem.Allocator, url: string, path: string) -> Error {
+    if url == "" {
+        log_to_file("ERROR", "download_file: blank URL provided")
+        fmt.printf("%s✖ Download error: URL is empty.%s\n", COLOR_RED, COLOR_RESET)
+        return .DownloadFailed
+    }
+    if path == "" {
+        log_to_file("ERROR", "download_file: blank destination path provided")
+        fmt.printf("%s✖ Download error: destination path is empty.%s\n", COLOR_RED, COLOR_RESET)
+        return .DownloadFailed
+    }
     fmt.printf("%s↓ Downloading %s...%s\n", COLOR_YELLOW, url, COLOR_RESET)
     args := []string{"curl", "-L", "--progress-bar", "-o", path, url}
     code, err := run_command(args[:])
     if code != 0 || err != .None {
+        log_to_file("ERROR", fmt.tprintf("download_file: curl failed (code=%d) for url=%s", code, url))
         return .DownloadFailed
     }
     fmt.printf("%s✔ Download complete.%s\n", COLOR_GREEN, COLOR_RESET)
     return .None
 }
+
 compute_sha256_stream :: proc(allocator: mem.Allocator, path: string) -> (string, Error) {
     f, err := os.open(path, os.O_RDONLY, 0)
     if err != os.ERROR_NONE {
@@ -103,6 +118,7 @@ compute_sha256_stream :: proc(allocator: mem.Allocator, path: string) -> (string
     }
     return strings.to_string(sb), .None
 }
+
 readlink :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
     MAX_PATH :: 4096
     buf := make([]u8, MAX_PATH, allocator)
@@ -115,6 +131,7 @@ readlink :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
     delete(buf)
     return res, true
 }
+
 log_to_file :: proc(level: string, message: string) {
     timestamp := time.now()
     ts_str := fmt.tprintf("%v", timestamp)
@@ -126,6 +143,7 @@ log_to_file :: proc(level: string, message: string) {
     defer os.close(f)
     os.write_string(f, entry)
 }
+
 acquire_lock :: proc() -> Error {
     if os.exists(LOCK_PATH) {
         data, ok := os.read_entire_file(LOCK_PATH, context.temp_allocator)
@@ -146,9 +164,11 @@ acquire_lock :: proc() -> Error {
     os.write_entire_file(LOCK_PATH, transmute([]u8)fmt.tprintf("%d", my_pid))
     return .None
 }
+
 release_lock :: proc() {
     os.remove(LOCK_PATH)
 }
+
 spinner_thread :: proc(t: ^thread.Thread) {
     done := (^bool)(t.data)
     spinner := [?]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -160,6 +180,7 @@ spinner_thread :: proc(t: ^thread.Thread) {
     }
     fmt.printf("\r ")
 }
+
 start_spinner :: proc() -> (^bool, ^thread.Thread) {
     done := new(bool)
     done^ = false
@@ -168,6 +189,7 @@ start_spinner :: proc() -> (^bool, ^thread.Thread) {
     thread.start(t)
     return done, t
 }
+
 stop_spinner :: proc(done: ^bool, t: ^thread.Thread) {
     done^ = true
     thread.join(t)
