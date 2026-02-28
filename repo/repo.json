@@ -1,8 +1,15 @@
 {
   "test": {
-    "url": "https://github.com/michal92299/test/releases/download/v{version}/moj-pakiet.hpm",
+    "author": "michal",
+    "license": "MIT",
+    "description": "Opis pakietu testowego",
     "versions": [
-      { "version": "0.1" }
+      {
+        "version": "0.1",
+        "url": "https://github.com/michal92299/test/releases/download/v0.1/moj-pakiet.hpm",
+        "sha256": "8356e3b1f5a01d82a3d14e73200ddbce057399ae48bb9b470c2c6911d31430a0",
+        "deps": {}
+      }
     ]
   }
   "hackerland": {
