@@ -1,6 +1,6 @@
 {
   "test": {
-    "url": "",
+    "url": "https://github.com/michal92299/test/releases/download/v{version}/moj-pakiet.hpm",
     "versions": [
       { "version": "0.1" }
     ]
