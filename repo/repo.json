@@ -11,23 +11,44 @@
         "deps": {}
       }
     ]
-  }
+  },
   "hackerland": {
-    "url": "https://github.com/HackerOS-Linux-System/HackerLand/releases/download/v{version}/hackerland.hpm",
+    "author": "HackerOS Team",
+    "license": "MIT",
+    "description": "HackerLand language",
     "versions": [
-      { "version": "0.3" }
+      {
+        "version": "0.3",
+        "url": "https://github.com/HackerOS-Linux-System/HackerLand/releases/download/v0.3/hackerland.hpm",
+        "sha256": "WSTAW_SUME_SHA256_DLA_HACKERLAND",
+        "deps": {}
+      }
     ]
-  }
+  },
   "Blue-Enviroment": {
-    "url": "https://github.com/HackerOS-Linux-System/Blue-Enviroment/releases/download/v{version}/Blue-Enviroment.hpm",
+    "author": "HackerOS Team",
+    "license": "MIT",
+    "description": "Blue Environment components",
     "versions": [
-      { "version": "0.3" }
+      {
+        "version": "0.3",
+        "url": "https://github.com/HackerOS-Linux-System/Blue-Enviroment/releases/download/v0.3/Blue-Enviroment.hpm",
+        "sha256": "WSTAW_SUME_SHA256_DLA_BLUE",
+        "deps": {}
+      }
     ]
-  }
-    "legendary": {
-    "url": "https://github.com/HackerOS-Linux-System/legendary/releases/download/v{version}/legendary.hpm",
+  },
+  "legendary": {
+    "author": "HackerOS Team",
+    "license": "MIT",
+    "description": "Legendary package",
     "versions": [
-      { "version": "0.3" }
+      {
+        "version": "0.3",
+        "url": "https://github.com/HackerOS-Linux-System/legendary/releases/download/v0.3/legendary.hpm",
+        "sha256": "WSTAW_SUME_SHA256_DLA_LEGENDARY",
+        "deps": {}
+      }
     ]
   }
 }
