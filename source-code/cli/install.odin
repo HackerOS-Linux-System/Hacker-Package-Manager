@@ -7,13 +7,15 @@ import "core:path/filepath"
 import "core:sys/linux"
 import "core:time"
 import "core:encoding/json"
+
 Manifest :: struct {
-    bins: [dynamic]string,
-    author: string,
-    license: string,
+    bins:        [dynamic]string,
+    author:      string,
+    license:     string,
     description: string,
-    deps: [dynamic]string, // For info.hk deps if any
+    deps:        [dynamic]string,
 }
+
 load_manifest :: proc(allocator: mem.Allocator, path: string) -> (Manifest, Error) {
     info_path := filepath.join({path, "info.hk"})
     defer delete(info_path)
@@ -23,11 +25,11 @@ load_manifest :: proc(allocator: mem.Allocator, path: string) -> (Manifest, Erro
     }
     defer delete(data)
     m: struct {
-        bins: []string,
-        author: string,
-        license: string,
+        bins:        []string,
+        author:      string,
+        license:     string,
         description: string,
-        deps: []string,
+        deps:        []string,
     }
     err := json.unmarshal(data, &m, allocator = allocator)
     if err != nil {
@@ -41,15 +43,16 @@ load_manifest :: proc(allocator: mem.Allocator, path: string) -> (Manifest, Erro
     for d, i in m.deps {
         deps[i] = strings.clone(d, allocator)
     }
-    manifest := Manifest {
-        bins = bins,
-        author = m.author,
-        license = m.license,
+    manifest := Manifest{
+        bins        = bins,
+        author      = m.author,
+        license     = m.license,
         description = m.description,
-        deps = deps,
+        deps        = deps,
     }
     return manifest, .None
 }
+
 deinit_manifest :: proc(m: ^Manifest, allocator: mem.Allocator) {
     for str in m.bins {
         delete(str, allocator)
@@ -63,20 +66,40 @@ deinit_manifest :: proc(m: ^Manifest, allocator: mem.Allocator) {
     delete(m.license, allocator)
     delete(m.description, allocator)
 }
+
+// Tworzy katalog i wszystkie brakujące katalogi nadrzędne (odpowiednik mkdir -p)
+makedirs :: proc(path: string) -> bool {
+    if os.exists(path) {
+        return true
+    }
+    mkdir_args := []string{"mkdir", "-p", path}
+    code, err := run_command(mkdir_args[:])
+    return code == 0 && err == .None
+}
+
 refresh :: proc(allocator: mem.Allocator) -> Error {
     log_to_file("INFO", "Refreshing package index")
-    temp_path := "/usr/lib/HackerOS/hpm/repo.json"
-    err := download_file(allocator, REPO_JSON_URL, temp_path)
+    if !makedirs("/usr/lib/HackerOS/hpm") {
+        log_to_file("ERROR", "Failed to create /usr/lib/HackerOS/hpm")
+        return .BackendFailed
+    }
+
+    err := download_file(allocator, REPO_JSON_URL, REPO_JSON_TMP)
     if err != .None {
         log_to_file("ERROR", "Download failed for repo.json")
         return err
     }
-    if os.rename(temp_path, "/usr/lib/HackerOS/hpm/repo.json") != os.ERROR_NONE {
+
+    if os.rename(REPO_JSON_TMP, REPO_JSON_PATH) != os.ERROR_NONE {
+        log_to_file("ERROR", "Failed to rename repo.json.tmp -> repo.json")
+        os.remove(REPO_JSON_TMP)
         return .BackendFailed
     }
+
     fmt.printf("%s✔ Package index refreshed.%s\n", COLOR_GREEN, COLOR_RESET)
     return .None
 }
+
 install :: proc(allocator: mem.Allocator, args: []string) -> Error {
     lock_err := acquire_lock()
     if lock_err != .None {
@@ -108,13 +131,9 @@ install :: proc(allocator: mem.Allocator, args: []string) -> Error {
     summary_deps: [dynamic]string
     summary_bins: [dynamic]string
     defer {
-        for str in summary_deps {
-            delete(str)
-        }
+        for str in summary_deps { delete(str) }
         delete(summary_deps)
-        for str in summary_bins {
-            delete(str)
-        }
+        for str in summary_bins { delete(str) }
         delete(summary_bins)
     }
     for spec in args {
@@ -153,7 +172,6 @@ install :: proc(allocator: mem.Allocator, args: []string) -> Error {
                 return single_err
             }
             append(&summary_deps, fmt.tprintf("%s%s@%s%s", COLOR_CYAN, p, v, COLOR_RESET))
-            // Load manifest for bins
             pkg_path := fmt.tprintf("%s%s/%s", STORE_PATH, p, v)
             defer delete(pkg_path)
             manifest, man_err := load_manifest(allocator, pkg_path)
@@ -165,18 +183,13 @@ install :: proc(allocator: mem.Allocator, args: []string) -> Error {
             }
         }
     }
-    // Podsumowanie
     if len(summary_deps) > 0 {
         fmt.printf("%sInstalled dependencies:%s\n", COLOR_BLUE, COLOR_RESET)
-        for d in summary_deps {
-            fmt.printf(" - %s\n", d)
-        }
+        for d in summary_deps { fmt.printf("  - %s\n", d) }
     }
     if len(summary_bins) > 0 {
         fmt.printf("%sAdded binaries to /usr/bin/:%s\n", COLOR_BLUE, COLOR_RESET)
-        for b in summary_bins {
-            fmt.printf(" - %s\n", b)
-        }
+        for b in summary_bins { fmt.printf("  - %s\n", b) }
     }
     err_save := save_state(&state, allocator)
     if err_save != .None {
@@ -184,6 +197,7 @@ install :: proc(allocator: mem.Allocator, args: []string) -> Error {
     }
     return .None
 }
+
 install_single :: proc(allocator: mem.Allocator, package_name: string, version: string, repo: ^Repo, state: ^StatePackages) -> Error {
     log_to_file("INFO", fmt.tprintf("Installing single %s@%s", package_name, version))
     pkg, ok := repo^[package_name]
@@ -203,19 +217,33 @@ install_single :: proc(allocator: mem.Allocator, package_name: string, version: 
         log_to_file("ERROR", fmt.tprintf("Version %s not found for %s", version, package_name))
         return .VersionNotFound
     }
-    pkg_url := ver_obj.url
+    pkg_url      := ver_obj.url
     expected_sha := ver_obj.sha256
+
+    // pkg_path     = finalna ścieżka: store/test/0.1
+    // temp_extract = katalog do rozpakowania tarballa: store/test/0.1.tmp
+    // Backend dostaje pkg_path i sam sobie dokłada .tmp wewnętrznie,
+    // pracuje na pkg_path.tmp, a na końcu robi rename(pkg_path.tmp -> pkg_path)
     pkg_path := fmt.tprintf("%s%s/%s", STORE_PATH, package_name, version)
     defer delete(pkg_path)
+
     current_link := fmt.tprintf("%s%s/current", STORE_PATH, package_name)
     defer delete(current_link)
+
     if os.exists(pkg_path) {
         fmt.printf("%s✔ Already installed %s%s@%s%s%s\n", COLOR_GREEN, COLOR_CYAN, package_name, version, COLOR_RESET, COLOR_RESET)
         return .None
     }
+
+    // Upewnij się że katalog cache istnieje
+    if !makedirs(CACHE_PATH) {
+        log_to_file("ERROR", fmt.tprintf("Failed to create cache dir: %s", CACHE_PATH))
+        return .BackendFailed
+    }
+
     cache_archive := fmt.tprintf("%s%s-%s.hpm", CACHE_PATH, package_name, version)
     defer delete(cache_archive)
-    os.make_directory(CACHE_PATH, 0o755)
+
     if os.exists(cache_archive) {
         fmt.printf("%sUsing cached archive for %s@%s%s\n", COLOR_YELLOW, package_name, version, COLOR_RESET)
     } else {
@@ -225,6 +253,7 @@ install_single :: proc(allocator: mem.Allocator, package_name: string, version: 
             return down_err
         }
     }
+
     if expected_sha != "" {
         computed_sha, sha_err := compute_sha256_stream(allocator, cache_archive)
         defer delete(computed_sha)
@@ -234,62 +263,109 @@ install_single :: proc(allocator: mem.Allocator, package_name: string, version: 
             return .ChecksumMismatch
         }
     }
+
+    // Utwórz store/package_name/ rekurencyjnie (mkdir -p)
+    // MUSI istnieć zanim powstanie store/package_name/version.tmp
+    pkg_dir := fmt.tprintf("%s%s", STORE_PATH, package_name)
+    defer delete(pkg_dir)
+    if !makedirs(pkg_dir) {
+        log_to_file("ERROR", fmt.tprintf("Failed to create package dir: %s", pkg_dir))
+        return .BackendFailed
+    }
+
+    // Katalog tymczasowy do rozpakowania — to jest pkg_path.tmp
+    // Backend w main.rs robi format!("{}.tmp", path) więc oczekuje że
+    // store/test/0.1.tmp już istnieje z zawartością paczki
     temp_extract := fmt.tprintf("%s.tmp", pkg_path)
     defer delete(temp_extract)
-    os.remove_directory(temp_extract)
-    os.make_directory(temp_extract, 0o755)
+
+    if os.exists(temp_extract) {
+        os.remove_directory(temp_extract)
+    }
+    if !makedirs(temp_extract) {
+        log_to_file("ERROR", fmt.tprintf("Failed to create temp extract dir: %s", temp_extract))
+        return .BackendFailed
+    }
+
     done, t := start_spinner()
     defer stop_spinner(done, t)
+
+    // Rozpakuj tarball do temp_extract (store/test/0.1.tmp)
     unpack_args := []string{"tar", "-I", "zstd", "-xf", cache_archive, "-C", temp_extract}
     code, run_err := run_command(unpack_args[:])
     if code != 0 || run_err != .None {
         log_to_file("ERROR", "Unpack failed")
+        os.remove_directory(temp_extract)
         return .UnpackFailed
     }
+
     checksum := expected_sha != "" ? expected_sha : "none"
-    backend_args := []string{BACKEND_PATH, "install", package_name, version, temp_extract, checksum}
+
+    // KLUCZOWA POPRAWKA:
+    // Przekazujemy pkg_path ("store/test/0.1") — NIE temp_extract ("store/test/0.1.tmp")
+    // Backend sam robi: let tmp_path = format!("{}.tmp", path)
+    // Więc znajdzie store/test/0.1.tmp (które właśnie rozpakowaliśmy),
+    // wykona operacje instalacji, i na końcu rename(0.1.tmp -> 0.1)
+    backend_args := []string{BACKEND_PATH, "install", package_name, version, pkg_path, checksum}
     code, run_err = run_command(backend_args[:])
     if code != 0 || run_err != .None {
         log_to_file("ERROR", "Backend install failed")
+        os.remove_directory(temp_extract)
         return .BackendFailed
     }
-    if os.rename(temp_extract, pkg_path) != os.ERROR_NONE {
+
+    // Backend już wykonał rename(0.1.tmp -> 0.1) — nie robimy tu nic więcej
+
+    // Utwórz symlink: store/test/current -> 0.1
+    symlink_dir := filepath.dir(current_link)
+    if !makedirs(symlink_dir) {
+        log_to_file("ERROR", fmt.tprintf("Failed to create symlink dir: %s", symlink_dir))
         return .BackendFailed
     }
-    os.make_directory(filepath.dir(current_link), 0o755)
     if os.exists(current_link) {
         os.remove(current_link)
     }
-    symlink_err := linux.symlink(strings.clone_to_cstring(version, context.temp_allocator), strings.clone_to_cstring(current_link, context.temp_allocator))
+    symlink_err := linux.symlink(
+        strings.clone_to_cstring(version, context.temp_allocator),
+        strings.clone_to_cstring(current_link, context.temp_allocator),
+    )
     if symlink_err != .NONE {
-        log_to_file("ERROR", "Failed to create symlink")
+        log_to_file("ERROR", fmt.tprintf("Failed to create symlink %s -> %s", current_link, version))
         return .SymlinkFailed
     }
+
     manifest, man_err := load_manifest(allocator, pkg_path)
     if man_err != .None {
+        log_to_file("ERROR", fmt.tprintf("Failed to load manifest from %s", pkg_path))
         return man_err
     }
     defer deinit_manifest(&manifest, allocator)
+
     for bin in manifest.bins {
         wrapper_path := fmt.tprintf("/usr/bin/%s", bin)
         defer delete(wrapper_path)
         wrapper_content := fmt.tprintf("#!/bin/sh\nexec %s run %s %s \"$@\"\n", BACKEND_PATH, package_name, bin)
         defer delete(wrapper_content)
         os.write_entire_file(wrapper_path, transmute([]u8)wrapper_content)
-        if linux.chmod(strings.clone_to_cstring(wrapper_path, context.temp_allocator), {.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH}) != .NONE {
-            log_to_file("ERROR", "Failed to chmod wrapper")
+        if linux.chmod(
+            strings.clone_to_cstring(wrapper_path, context.temp_allocator),
+            {.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH},
+        ) != .NONE {
+            log_to_file("ERROR", fmt.tprintf("Failed to chmod wrapper: %s", wrapper_path))
             return .ChmodFailed
         }
     }
-    // Update state with date
-    if _, ok := state^[package_name]; !ok {
+
+    if _, ok2 := state^[package_name]; !ok2 {
         state^[package_name] = make(map[string]VersionInfo, allocator)
     }
     vers := state^[package_name]
     vers[version] = VersionInfo{checksum = checksum, date = time.now(), pinned = false}
+
     fmt.printf("%s✔ Installed %s%s@%s%s%s\n", COLOR_GREEN, COLOR_CYAN, package_name, version, COLOR_RESET, COLOR_RESET)
     return .None
 }
+
 verify :: proc(allocator: mem.Allocator, pkg_name: string) -> Error {
     state, state_err := load_state(allocator)
     if state_err != .None {
