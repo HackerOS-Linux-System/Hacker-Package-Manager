@@ -20,19 +20,22 @@ REPO_JSON_URL :: "https://raw.githubusercontent.com/HackerOS-Linux-System/Hacker
 VERSION_URL :: "https://raw.githubusercontent.com/HackerOS-Linux-System/Hacker-Package-Manager/main/version.hacker"
 LOCAL_VERSION_FILE :: "/usr/lib/HackerOS/hpm/version.json"
 RELEASES_BASE :: "https://github.com/HackerOS-Linux-System/Hacker-Package-Manager/releases/download/v"
+REPO_JSON_PATH :: "/usr/lib/HackerOS/hpm/repo.json"
+REPO_JSON_TMP  :: "/usr/lib/HackerOS/hpm/repo.json.tmp"
 STATE_PATH :: "/var/lib/hpm/state.json"
 STATE_TMP_PATH :: "/var/lib/hpm/state.json.tmp"
 LOCK_PATH :: "/var/lib/hpm/lock"
 LOG_PATH :: "/var/log/hpm.log"
 CACHE_PATH :: "/var/cache/hpm/"
+
 // Kolory ANSI
-COLOR_GREEN :: "\033[1;32m"
-COLOR_YELLOW :: "\033[1;33m"
-COLOR_RED :: "\033[1;31m"
-COLOR_CYAN :: "\033[1;36m"
+COLOR_GREEN   :: "\033[1;32m"
+COLOR_YELLOW  :: "\033[1;33m"
+COLOR_RED     :: "\033[1;31m"
+COLOR_CYAN    :: "\033[1;36m"
 COLOR_MAGENTA :: "\033[1;35m"
-COLOR_BLUE :: "\033[1;34m"
-COLOR_RESET :: "\033[0m"
+COLOR_BLUE    :: "\033[1;34m"
+COLOR_RESET   :: "\033[0m"
 
 Error :: enum {
     None,
@@ -67,6 +70,14 @@ main :: proc() {
     defer delete(backing)
     allocator := mem.arena_allocator(&arena)
     context.allocator = allocator
+
+    // Upewnij się że katalogi systemowe istnieją
+    os.make_directory("/usr/lib/HackerOS", 0o755)
+    os.make_directory("/usr/lib/HackerOS/hpm", 0o755)
+    os.make_directory(STORE_PATH, 0o755)
+    os.make_directory("/var/lib/hpm", 0o755)
+    os.make_directory(CACHE_PATH, 0o755)
+
     args := os.args[1:]
     if len(args) < 1 {
         print_help()
@@ -168,29 +179,29 @@ print_help :: proc() {
     fmt.printf("%sHPM %s - Hacker Package Manager%s\n", COLOR_GREEN, VERSION, COLOR_RESET)
     fmt.println("Usage: hpm <command> [args]")
     fmt.println("Commands:")
-    fmt.printf(" %srefresh%s Refresh package index\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sinstall%s <pkg>[@ver] Install package (with optional version)\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sremove%s <pkg>[@ver] Remove package (with optional version)\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %supdate%s Update all installed packages\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sswitch%s <pkg> <ver> Switch to specific version\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %supgrade%s Upgrade HPM itself\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %srun%s <pkg>[@ver] <bin> Run tool from package\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sbuild%s <name> Build .hpm package from current directory\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %ssearch%s <query> Search packages by name/description\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sinfo%s <pkg> Show package info\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %slist%s List installed packages\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sclean%s Clean cache\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %spin%s <pkg> <ver> Pin package to version\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sunpin%s <pkg> Unpin package\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %soutdated%s List outdated packages\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sverify%s <pkg> Verify package checksum\n", COLOR_CYAN, COLOR_RESET)
-    fmt.printf(" %sdeps%s <pkg> Show dependency tree\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %srefresh%s               Refresh package index\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sinstall%s <pkg>[@ver]   Install package (with optional version)\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sremove%s  <pkg>[@ver]   Remove package (with optional version)\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %supdate%s                Update all installed packages\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sswitch%s  <pkg> <ver>   Switch to specific version\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %supgrade%s               Upgrade HPM itself\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %srun%s     <pkg>[@ver] <bin>  Run tool from package\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sbuild%s   <name>        Build .hpm package from current directory\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %ssearch%s  <query>       Search packages by name/description\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sinfo%s    <pkg>         Show package info\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %slist%s                  List installed packages\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sclean%s                 Clean cache\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %spin%s     <pkg> <ver>   Pin package to version\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sunpin%s   <pkg>         Unpin package\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %soutdated%s              List outdated packages\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sverify%s  <pkg>         Verify package checksum\n", COLOR_CYAN, COLOR_RESET)
+    fmt.printf("  %sdeps%s    <pkg>         Show dependency tree\n", COLOR_CYAN, COLOR_RESET)
 }
 
 print_error :: proc(err: Error) {
     fmt.printf("%s✖ Error: ", COLOR_RED)
     switch err {
-        case .None: // Should not happen
+        case .None:
         case .InvalidArgs:
             fmt.printf("Invalid arguments provided.%s\n", COLOR_RESET)
         case .RepoLoadFailed:
