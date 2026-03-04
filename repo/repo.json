@@ -10,6 +10,11 @@
         "sha256": "8356e3b1f5a01d82a3d14e73200ddbce057399ae48bb9b470c2c6911d31430a0",
         "deps": {}
       }
+      {
+        "version": "0.2",
+        "url": "https://github.com/michal92299/test/releases/download/v0.2/test.hpm"
+        "sha256": ""
+        "deps": {}
     ]
   },
   "hackerland": {
